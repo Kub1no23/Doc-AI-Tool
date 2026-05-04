@@ -123,15 +123,24 @@ public class InitDocAnalysis
             urlSource = sasUrl
         };
 
-        var content = new StringContent(JsonSerializer.Serialize(requestBody));
+        string json = JsonSerializer.Serialize(requestBody);
+        var content = new StringContent(json);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
         var reqUrl = $"{_docIntelligenceEndpoint}/formrecognizer/documentModels/prebuilt-layout:analyze?api-version=2023-07-31";
 
+        // 🔥 Log request info
+        _logger.LogInformation("DI REQUEST URL: {Url}", reqUrl);
+        _logger.LogInformation("DI REQUEST BODY: {Body}", json);
+
         var response = await http.PostAsync(reqUrl, content);
         string body = await response.Content.ReadAsStringAsync();
 
-        _logger.LogInformation("DI response status: {Status}", response.StatusCode);
+        // 🔥 Log response info
+        _logger.LogInformation("DI RESPONSE STATUS: {Status}", response.StatusCode);
+        _logger.LogInformation("DI RESPONSE HEADERS: {Headers}",
+            string.Join("; ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}")));
+        _logger.LogInformation("DI RESPONSE BODY: {Body}", body);
 
         if (!response.IsSuccessStatusCode)
             throw new Exception($"Document Intelligence analyze request failed: {response.StatusCode} - {body}");

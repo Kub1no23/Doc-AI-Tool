@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using rag.shared;
 using System.Text.Json;
 
 internal class DocInfo
@@ -36,51 +37,69 @@ internal class DocInfo
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", _Key);
 
-        var url = $"{_Endpoint}/formrecognizer/documentModels/prebuilt-document/analyzeResults/{OperationId}?api-version=2023-07-31";
+        var url = $"{_Endpoint}/formrecognizer/documentModels/prebuilt-layout/analyzeResults/{OperationId}?api-version=2023-07-31";
+
+        _logger.LogInformation("=== FetchOperationAsync START ===");
+        _logger.LogInformation("Polling URL: {0}", url);
 
         var response = await http.GetAsync(url);
 
-        // Logni status code
+        // HTTP status
         _logger.LogInformation("DI HTTP status: {0}", response.StatusCode);
 
-        // Logni headers
+        // Headers
+        _logger.LogInformation("DI RESPONSE HEADERS:");
         foreach (var h in response.Headers)
         {
-            _logger.LogInformation("Header: {0} = {1}", h.Key, string.Join(",", h.Value));
+            _logger.LogInformation("  {0}: {1}", h.Key, string.Join(",", h.Value));
         }
 
-        // Logni body
+        // Body
         string json = await response.Content.ReadAsStringAsync();
-        _logger.LogInformation("DI raw JSON: {0}", json);
+        _logger.LogInformation("DI RAW JSON:\n{0}", json);
 
         string status = "unknown";
 
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        // 1) status na rootu
-        if (root.TryGetProperty("status", out var s1))
+        try
         {
-            status = s1.GetString() ?? "unknown";
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // status at root
+            if (root.TryGetProperty("status", out var s1))
+            {
+                status = s1.GetString() ?? "unknown";
+                _logger.LogInformation("Extracted status (root): {0}", status);
+            }
+            // status inside analyzeResult
+            else if (root.TryGetProperty("analyzeResult", out var ar) &&
+                     ar.TryGetProperty("status", out var s2))
+            {
+                status = s2.GetString() ?? "unknown";
+                _logger.LogInformation("Extracted status (analyzeResult): {0}", status);
+            }
+            // error object
+            else if (root.TryGetProperty("error", out var err))
+            {
+                _logger.LogError("DI ERROR OBJECT: {0}", err.ToString());
+                status = "failed";
+            }
+            else
+            {
+                _logger.LogWarning("No status field found in DI response.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("JSON parse error: {0}", ex.Message);
+            status = "unknown";
         }
 
-        // 2) status v analyzeResult
-        else if (root.TryGetProperty("analyzeResult", out var ar) &&
-                 ar.TryGetProperty("status", out var s2))
-        {
-            status = s2.GetString() ?? "unknown";
-        }
-
-        // 3) error
-        else if (root.TryGetProperty("error", out var err))
-        {
-            _logger.LogError("DI error: {0}", err.ToString());
-            status = "failed";
-        }
+        _logger.LogInformation("Final parsed status: {0}", status);
+        _logger.LogInformation("=== FetchOperationAsync END ===");
 
         return (status, json);
     }
-
 }
 public class CheckDocAnalysis
 {
@@ -169,7 +188,13 @@ public class CheckDocAnalysis
         // 3) Všechny dokumenty jsou hotové → uložit výsledky
         foreach (var r in results)
         {
-            SaveDocumentResult(prefix, r.Doc.FileName, r.Json);
+            SaveDocumentResult(prefix, r.Doc.FileName, r.Json); // for testing
+            var payload = new EmbedReqPayload
+            {
+                DocumentId = r.Doc.Id,
+                DiResult = JsonDocument.Parse(r.Json).RootElement.Clone()
+            };
+            await QueueSender.SendToQueueAsync(QueueMessageType.EmbeddingRequest, payload);
             UpdateDocumentStatus(r.Doc.Id, "done");
         }
 
