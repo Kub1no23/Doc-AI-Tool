@@ -37,26 +37,16 @@ internal class DocInfo
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", _Key);
 
-        var url = $"{_Endpoint}/formrecognizer/documentModels/prebuilt-layout/analyzeResults/{OperationId}?api-version=2023-07-31";
+        var baseUrl = _Endpoint.TrimEnd('/');
+        var url = $"{baseUrl}/documentintelligence/documentModels/prebuilt-layout/analyzeResults/{OperationId}?api-version=2024-11-30";
 
-        _logger.LogInformation("=== FetchOperationAsync START ===");
         _logger.LogInformation("Polling URL: {0}", url);
 
         var response = await http.GetAsync(url);
-
-        // HTTP status
-        _logger.LogInformation("DI HTTP status: {0}", response.StatusCode);
-
-        // Headers
-        _logger.LogInformation("DI RESPONSE HEADERS:");
-        foreach (var h in response.Headers)
-        {
-            _logger.LogInformation("  {0}: {1}", h.Key, string.Join(",", h.Value));
-        }
-
-        // Body
         string json = await response.Content.ReadAsStringAsync();
-        _logger.LogInformation("DI RAW JSON:\n{0}", json);
+
+        _logger.LogInformation("DI HTTP status: {0}", response.StatusCode);
+        _logger.LogInformation("DI RAW JSON length: {0} chars", json.Length);
 
         string status = "unknown";
 
@@ -65,20 +55,11 @@ internal class DocInfo
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            // status at root
-            if (root.TryGetProperty("status", out var s1))
+            if (root.TryGetProperty("status", out var statusProp))
             {
-                status = s1.GetString() ?? "unknown";
-                _logger.LogInformation("Extracted status (root): {0}", status);
+                status = statusProp.GetString()?.ToLowerInvariant() ?? "unknown";
+                _logger.LogInformation("Extracted status: {0}", status);
             }
-            // status inside analyzeResult
-            else if (root.TryGetProperty("analyzeResult", out var ar) &&
-                     ar.TryGetProperty("status", out var s2))
-            {
-                status = s2.GetString() ?? "unknown";
-                _logger.LogInformation("Extracted status (analyzeResult): {0}", status);
-            }
-            // error object
             else if (root.TryGetProperty("error", out var err))
             {
                 _logger.LogError("DI ERROR OBJECT: {0}", err.ToString());
@@ -86,13 +67,18 @@ internal class DocInfo
             }
             else
             {
-                _logger.LogWarning("No status field found in DI response.");
+                _logger.LogWarning("No 'status' or 'error' field found in DI response.");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    status = "failed";
+                }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError("JSON parse error: {0}", ex.Message);
-            status = "unknown";
+            status = !response.IsSuccessStatusCode ? "failed" : "unknown";
         }
 
         _logger.LogInformation("Final parsed status: {0}", status);
@@ -118,8 +104,6 @@ public class CheckDocAnalysis
             ?? throw new InvalidOperationException("DocIntelligenceEndpoint env variable is missing.");
         _docIntelligenceKey = Environment.GetEnvironmentVariable("DocIntelligenceKey")
             ?? throw new InvalidOperationException("DocIntelligenceKey env variable is missing.");
-
-
     }
 
     [Function("CheckDocAnalysis")]

@@ -1,4 +1,6 @@
-﻿using Azure.Storage.Blobs;
+﻿using Azure;
+using Azure.AI.DocumentIntelligence;
+using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
 using Microsoft.AspNetCore.Http;
@@ -7,8 +9,6 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System.Data;
-using System.Net.Http.Headers;
-using System.Text.Json;
 
 
 namespace rag;
@@ -18,8 +18,7 @@ public class InitDocAnalysis
     private readonly ILogger<InitDocAnalysis> _logger;
     private readonly string _blobConnection;
     private readonly string _sql;
-    private readonly string _docIntelligenceEndpoint;
-    private readonly string _docIntelligenceKey;
+    private readonly DocumentIntelligenceClient _docClient;
 
     public InitDocAnalysis(ILogger<InitDocAnalysis> logger)
     {
@@ -29,10 +28,14 @@ public class InitDocAnalysis
             ?? throw new InvalidOperationException("BlobConnection env variable is missing.");
         _sql = Environment.GetEnvironmentVariable("SqlConnection")
             ?? throw new InvalidOperationException("SqlConnection env variable is missing.");
-        _docIntelligenceEndpoint = Environment.GetEnvironmentVariable("DocIntelligenceEndpoint")
+        var endpoint = Environment.GetEnvironmentVariable("DocIntelligenceEndpoint")
             ?? throw new InvalidOperationException("DocIntelligenceEndpoint env variable is missing.");
-        _docIntelligenceKey = Environment.GetEnvironmentVariable("DocIntelligenceKey")
+        var apiKey = Environment.GetEnvironmentVariable("DocIntelligenceKey")
             ?? throw new InvalidOperationException("DocIntelligenceKey env variable is missing.");
+
+        var options = new DocumentIntelligenceClientOptions(DocumentIntelligenceClientOptions.ServiceVersion.V2024_11_30);
+        _docClient = new DocumentIntelligenceClient(new Uri(endpoint), new AzureKeyCredential(apiKey), options);
+        _logger.LogInformation($"Spouštím analýzu pomocí modelu API 2024-11-30...");
     }
 
     [Function("InitDocAnalysis")]
@@ -107,9 +110,6 @@ public class InitDocAnalysis
 
     private async Task<string> StartDocumentIntelligenceAnalysis(string pdfUrl)
     {
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", _docIntelligenceKey);
-
         string fileName = Path.GetFileName(new Uri(pdfUrl).AbsolutePath);
 
         var blobServiceClient = new BlobServiceClient(_blobConnection);
@@ -118,44 +118,23 @@ public class InitDocAnalysis
 
         string sasUrl = GenerateBlobReadSas(blobClient).ToString();
 
-        var requestBody = new
+        _logger.LogInformation("DI REQUEST START: model=prebuilt-layout, urlSource={Url}", sasUrl);
+
+        try
         {
-            urlSource = sasUrl
-        };
+            Operation operation = await _docClient.AnalyzeDocumentAsync(WaitUntil.Started, "prebuilt-layout", new Uri(sasUrl));
 
-        string json = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(json);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            string operationId = operation.Id;
 
-        var reqUrl = $"{_docIntelligenceEndpoint}/formrecognizer/documentModels/prebuilt-layout:analyze?api-version=2023-07-31";
+            _logger.LogInformation("DI RESPONSE SUCCESS: Operation-Location header extracted. OperationId: {OperationId}", operationId);
 
-        // 🔥 Log request info
-        _logger.LogInformation("DI REQUEST URL: {Url}", reqUrl);
-        _logger.LogInformation("DI REQUEST BODY: {Body}", json);
-
-        var response = await http.PostAsync(reqUrl, content);
-        string body = await response.Content.ReadAsStringAsync();
-
-        // 🔥 Log response info
-        _logger.LogInformation("DI RESPONSE STATUS: {Status}", response.StatusCode);
-        _logger.LogInformation("DI RESPONSE HEADERS: {Headers}",
-            string.Join("; ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}")));
-        _logger.LogInformation("DI RESPONSE BODY: {Body}", body);
-
-        if (!response.IsSuccessStatusCode)
-            throw new Exception($"Document Intelligence analyze request failed: {response.StatusCode} - {body}");
-
-        if (!response.Headers.TryGetValues("Operation-Location", out var values))
-            throw new Exception("Document Intelligence did not return Operation-Location header.");
-
-        string operationLocation = values.First();
-        string operationId = operationLocation
-            .Split('/')
-            .Last()
-            .Split('?')
-            .First();
-
-        return operationId;
+            return operationId;
+        }
+        catch (RequestFailedException ex)
+        {
+            _logger.LogError(ex, "DI RESPONSE ERROR: Status {Status}. Body: {Body}", ex.Status, ex.Message);
+            throw new Exception($"Document Intelligence analyze request failed: {ex.Status} - {ex.Message}", ex);
+        }
     }
 
     private void SaveOperationToDatabase(string prefix)
