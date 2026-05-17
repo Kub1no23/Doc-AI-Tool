@@ -118,7 +118,7 @@ public class Analysis
                             created_at = reader.GetDateTime(5),
                             updated_at = reader.GetDateTime(6)
                         });
-                    }
+                    }       
 
                     return new OkObjectResult(results);
                 }

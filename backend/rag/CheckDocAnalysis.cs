@@ -36,8 +36,7 @@ internal class DocInfo
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", _Key);
 
-        var url = $"{_Endpoint}/formrecognizer/documentModels/prebuilt-document/analyzeResults/{OperationId}?api-version=2023-07-31";
-
+        var url = $"{_Endpoint}/documentintelligence/documentModels/prebuilt-layout/analyzeResults/{OperationId}?api-version=2024-11-30";
         var response = await http.GetAsync(url);
 
         // Logni status code
