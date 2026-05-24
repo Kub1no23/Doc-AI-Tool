@@ -1,14 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq; // Potřebujeme pro .ToArray()
-using System.Threading.Tasks;
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Logging;
-using Microsoft.Data.SqlClient;
-using Azure.AI.OpenAI;
+﻿using Azure.AI.OpenAI;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using System.ClientModel; // PŘIDÁNO: Pro nový způsob ověřování (ApiKeyCredential)
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
+using OpenAI.Embeddings; // PŘIDÁNO: Potřebné pro EmbeddingGenerationOptions
+using System;
+using System.ClientModel;
+using System.Collections.Generic;
+using System.Linq; // Potřebujeme pro .ToArray()
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace rag
 {
@@ -23,8 +26,10 @@ namespace rag
         {
             _logger = logger;
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
-            _openAiEndpoint = Environment.GetEnvironmentVariable("OpenAI_Endpoint") ?? throw new Exception("Chybí OpenAI_Endpoint");
-            _openAiKey = Environment.GetEnvironmentVariable("OpenAI_ApiKey") ?? throw new Exception("Chybí OpenAI_ApiKey");
+
+            // OPRAVA: Dvě podtržítka!
+            _openAiEndpoint = Environment.GetEnvironmentVariable("OpenAI__Endpoint") ?? throw new Exception("Chybí OpenAI__Endpoint");
+            _openAiKey = Environment.GetEnvironmentVariable("OpenAI__ApiKey") ?? throw new Exception("Chybí OpenAI__ApiKey");
         }
 
         [Function("SeedRisks")]
@@ -32,8 +37,6 @@ namespace rag
         {
             _logger.LogInformation("Začínám plnit databázi reálnými stavebními riziky z CSV...");
 
-            // 1. Reálná data vytažená z tvého nahraného souboru Rizika.csv
-            // (Spojil jsem název a popis rizika do jednoho textu, aby to AI model lépe chápal)
             var risks = new List<(string Code, string Description, int Weight)>
             {
                 ("R001", "Geotechnické riziko: Riziko spojené s nestabilním podložím, sesuvy půdy, vysokou hladinou podzemní vody nebo neočekávanými geologickými podmínkami.", 1),
@@ -54,18 +57,14 @@ namespace rag
                 ("R018", "Riziko sousedských vztahů: Riziko stížností nebo právních sporů se sousedy kvůli stavebním pracím - hluk, prach, vibrace, omezení přístupu. ", 2),
                 ("R019", "Riziko nedostatečných kapacit: Riziko nedostatečných kapacit dodavatele - personál, technika, současné zakázky, které může ovlivnit realizaci.", 1),
                 ("R020", "Riziko změn legislativy: Riziko změn v legislativě během realizace projektu, které může ovlivnit požadavky, normy nebo podmínky realizace.", 2)
-
             };
 
-            // 2. Připravíme si "klienta" pro komunikaci s OpenAI (Nová syntaxe pro verzi 2.0+)
             var openAiClient = new AzureOpenAIClient(new Uri(_openAiEndpoint), new ApiKeyCredential(_openAiKey));
             var embeddingClient = openAiClient.GetEmbeddingClient("text-embedding-3-large");
 
-            // 3. Připojíme se do databáze
             using var conn = new SqlConnection(_sqlConnection);
             await conn.OpenAsync();
 
-            // POJISTKA: Vymažeme stará rizika, abychom je nevkládali dvakrát, pokud to spustíš vícekrát
             _logger.LogInformation("Pročišťuji databázi od starých rizik...");
             using (var cmdDelete = new SqlCommand("DELETE FROM risk_vectors", conn))
             {
@@ -74,20 +73,18 @@ namespace rag
 
             int pocetVlozenych = 0;
 
-            // 4. Projdeme rizika jedno po druhém a vytvoříme k nim vektory
             foreach (var risk in risks)
             {
                 _logger.LogInformation($"Získávám AI vektor pro riziko: {risk.Code}");
 
-                // Pošleme text do OpenAI a získáme vektor
-                var response = await embeddingClient.GenerateEmbeddingAsync(risk.Description);
+                var embeddingOptions = new EmbeddingGenerationOptions { Dimensions = 1536 };
+                var response = await embeddingClient.GenerateEmbeddingAsync(risk.Description, embeddingOptions);
                 float[] embeddingVector = response.Value.ToFloats().ToArray();
 
-                // Převod pole floatů na bajty pro VARBINARY v databázi
-                byte[] embeddingBytes = new byte[embeddingVector.Length * 4];
-                Buffer.BlockCopy(embeddingVector, 0, embeddingBytes, 0, embeddingBytes.Length);
+                // OPRAVA: Převedeme pole na JSON text a ten uložíme jako UTF-8 bajty
+                string jsonEmbedding = JsonSerializer.Serialize(embeddingVector);
+                byte[] jsonBytes = Encoding.UTF8.GetBytes(jsonEmbedding);
 
-                // Zápis do databáze
                 string sql = @"
                     INSERT INTO risk_vectors (risk_code, text, risk_weight, embedding)
                     VALUES (@code, @text, @weight, @embedding)";
@@ -96,13 +93,13 @@ namespace rag
                 cmd.Parameters.AddWithValue("@code", risk.Code);
                 cmd.Parameters.AddWithValue("@text", risk.Description);
                 cmd.Parameters.AddWithValue("@weight", risk.Weight);
-                cmd.Parameters.AddWithValue("@embedding", embeddingBytes);
+                cmd.Parameters.AddWithValue("@embedding", jsonBytes);
 
                 await cmd.ExecuteNonQueryAsync();
                 pocetVlozenych++;
             }
 
-            return new OkObjectResult($"Úspěch! Do databáze bylo vloženo a ovektorováno {pocetVlozenych} reálných stavebních rizik.");
+            return new OkObjectResult($"Úspěch! Do databáze bylo vloženo a ovektorováno {pocetVlozenych} reálných stavebních rizik s délkou 1536 dimenzí.");
         }
     }
 }

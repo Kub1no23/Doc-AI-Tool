@@ -1,24 +1,21 @@
-﻿using System;
+﻿using Azure;
+using Azure.AI.OpenAI;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
+using OpenAI.Chat;
+using rag.shared;
+using System;
 using System.Collections.Generic;
+using System.Data; // PŘIDÁNO: Potřebné pro SqlDbType
 using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Logging;
-using Microsoft.Data.SqlClient;
-using Azure;
-using Azure.AI.OpenAI;
-using OpenAI.Chat; // OPRAVA 1: Nová cesta pro OpenAI verze 2.0+
 
 namespace rag
 {
-    // OPRAVA 2: Třídy od kolegy jsme přidali sem, aby Visual Studio nehlásilo chybějící "rag.shared"
-    public enum QueueMessageType { EmbeddingRequest = 1, SimilarityRequest = 2, DocumentAnalysisCompleted = 3, PdfImageExtraction = 4, CleanupTask = 5 }
-    public class QueueEnvelope<T> { public QueueMessageType Type { get; set; } public T Payload { get; set; } }
-    public class SimilarityReqPayload { public Guid DocumentId { get; set; } }
-
-    // Přepravka pro odpověď od ChatGPT, která přesně odpovídá vaší SQL tabulce
+    // Přepravka pro odpověď od ChatGPT
     public class RiskAnalysisResult
     {
         public string Coverage { get; set; }
@@ -36,34 +33,48 @@ namespace rag
         {
             _logger = logger;
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
-            _openAiEndpoint = Environment.GetEnvironmentVariable("OpenAI_Endpoint") ?? throw new Exception("Chybí OpenAI_Endpoint");
-            _openAiKey = Environment.GetEnvironmentVariable("OpenAI_ApiKey") ?? throw new Exception("Chybí OpenAI_ApiKey");
+            _openAiEndpoint = Environment.GetEnvironmentVariable("OpenAI__Endpoint") ?? throw new Exception("Chybí OpenAI__Endpoint");
+            _openAiKey = Environment.GetEnvironmentVariable("OpenAI__ApiKey") ?? throw new Exception("Chybí OpenAI__ApiKey");
         }
 
         [Function(nameof(ProcessAnalysisQueue))]
-        public async Task Run([QueueTrigger("ragqueue", Connection = "AzureWebJobsStorage")] string queueMessage)
+        public async Task Run([QueueTrigger("ai-analysis-queue", Connection = "AzureWebJobsStorage")] string queueMessage)
         {
             try
             {
-                // ROZBALENÍ ZPRÁVY
-                string decodedJson = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
                 var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-                var envelope = JsonSerializer.Deserialize<QueueEnvelope<JsonElement>>(decodedJson, options);
+                string jsonToParse = queueMessage;
+
+                // Kontrola Base64
+                if (!queueMessage.Trim().StartsWith("{"))
+                {
+                    jsonToParse = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
+                }
+
+                // Přímé dekódování do správného typu
+                var envelope = JsonSerializer.Deserialize<QueueEnvelope<SimilarityReqPayload>>(jsonToParse, options);
 
                 if (envelope == null || envelope.Type != QueueMessageType.SimilarityRequest)
                 {
-                    return; // Ignorujeme, toto zpracovává jiná funkce
+                    _logger.LogWarning("Zpráva ignorována: Není typu SimilarityRequest.");
+                    return;
                 }
 
-                var payload = envelope.Payload.Deserialize<SimilarityReqPayload>(options);
-                Guid docId = payload.DocumentId;
-
-                _logger.LogInformation($"Začínám AI analýzu (Reduce 1) pro dokument s ID: {docId}");
+                Guid docId = envelope.Payload.DocumentId;
+                _logger.LogInformation($"Začínám AI analýzu pro dokument s ID: {docId}");
 
                 using var conn = new SqlConnection(_sqlConnection);
                 await conn.OpenAsync();
 
-                // NAČTENÍ RIZIK
+                // Promazání starých výsledků před novou analýzou
+                string sqlClearOld = "DELETE FROM risk_analysis_results WHERE document_id = @docId";
+                using (var cmdClear = new SqlCommand(sqlClearOld, conn))
+                {
+                    cmdClear.Parameters.AddWithValue("@docId", docId);
+                    await cmdClear.ExecuteNonQueryAsync();
+                }
+
+                // NAČTENÍ RIZIK Z DATABÁZE
                 var risks = new List<(Guid RiskId, string RiskCode, string RiskText, byte[] RiskEmbedding)>();
                 string sqlGetRisks = "SELECT id, risk_code, text, embedding FROM risk_vectors";
 
@@ -86,23 +97,47 @@ namespace rag
                 var openAiClient = new AzureOpenAIClient(new Uri(_openAiEndpoint), new System.ClientModel.ApiKeyCredential(_openAiKey));
                 var chatClient = openAiClient.GetChatClient("gpt-4o-mini");
 
-                // PROJDEME KAŽDÉ RIZIKO
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
                 foreach (var risk in risks)
                 {
                     _logger.LogInformation($"Hledám riziko {risk.RiskCode} v dokumentu {docId}");
 
+                    // 1. Z přečtených UTF-8 bajtů uděláme zpátky čistý JSON string
+                    string jsonVector = Encoding.UTF8.GetString(risk.RiskEmbedding);
+
+                    // OPRAVA 2: Tady je ten zázračný trojitý CAST! 
+                    // Ty JSON bajty, co jsme si tam uložili, si tu převedeme zpátky na VARCHAR(MAX) 
+                    // a následně na nativní typ VECTOR. Azure SQL to bez remcání sežere.
+                    // OPRAVA 2: Čistý SQL dotaz
+                    // 2. ZMĚNA: SQL dotaz s dvojitým jištěním
+                    // @riskEmbedding se teď předává jako obyčejný VARCHAR a převede se nativně (protože to SQL z textu umí).
+                    // embedding sloupec se musí "oříznout" a pak převést na VECTOR.
+                    // 2. TOTO JE TA OPRAVA: Místo nefunkčního SUBSTRING použijeme tvrdý CAST na VARBINARY(8000), 
+                    // čímž sloupci 'embedding' definitivně sebereme přívlastek (MAX) a pak z něj teprve uděláme VECTOR.
+                    // 2. V SQL použijeme CAST z textu (VARCHAR) na VECTOR. Tohle je oficiálně podporovaná cesta!
                     string sqlVectorSearch = @"
                         SELECT TOP 3 id, text 
                         FROM pdf_chunks 
                         WHERE document_id = @docId 
-                        ORDER BY VECTOR_DISTANCE('cosine', @riskEmbedding, embedding) ASC";
+                        ORDER BY VECTOR_DISTANCE(
+                            'cosine', 
+                            CAST(@riskEmbedding AS VECTOR(1536)), 
+                            CAST(CAST(embedding AS VARCHAR(MAX)) AS VECTOR(1536))
+                        ) ASC";
 
                     var relevantChunks = new List<(Guid ChunkId, string Text)>();
 
                     using (var cmdSearch = new SqlCommand(sqlVectorSearch, conn))
                     {
                         cmdSearch.Parameters.AddWithValue("@docId", docId);
-                        cmdSearch.Parameters.AddWithValue("@riskEmbedding", risk.RiskEmbedding);
+
+                        // Posíláme do SQL čistý text (NVARCHAR). SQL Server zajásá.
+                        cmdSearch.Parameters.AddWithValue("@riskEmbedding", jsonVector);
 
                         using (var reader = await cmdSearch.ExecuteReaderAsync())
                         {
@@ -112,12 +147,10 @@ namespace rag
                             }
                         }
                     }
-
                     if (relevantChunks.Count == 0) continue;
 
                     string combinedChunks = string.Join("\n\n--- DALŠÍ ODSTAVEC ---\n\n", relevantChunks.Select(c => c.Text));
 
-                    // OPRAVA 1: Používáme správné třídy z OpenAI.Chat
                     var messages = new List<ChatMessage>
                     {
                         new SystemChatMessage(

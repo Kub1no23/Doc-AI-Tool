@@ -6,6 +6,13 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.IO;
+using System.Linq;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System;
+using System.Net.Http;
+using rag.shared;
 
 internal class DocInfo
 {
@@ -25,7 +32,6 @@ internal class DocInfo
         FileName = fileName;
         OperationId = operationId;
         Status = status;
-
         _Endpoint = endpoint;
         _Key = key;
         _logger = logger;
@@ -39,16 +45,8 @@ internal class DocInfo
         var url = $"{_Endpoint}/documentintelligence/documentModels/prebuilt-layout/analyzeResults/{OperationId}?api-version=2024-11-30";
         var response = await http.GetAsync(url);
 
-        // Logni status code
         _logger.LogInformation("DI HTTP status: {0}", response.StatusCode);
 
-        // Logni headers
-        foreach (var h in response.Headers)
-        {
-            _logger.LogInformation("Header: {0} = {1}", h.Key, string.Join(",", h.Value));
-        }
-
-        // Logni body
         string json = await response.Content.ReadAsStringAsync();
         _logger.LogInformation("DI raw JSON: {0}", json);
 
@@ -57,20 +55,15 @@ internal class DocInfo
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        // 1) status na rootu
         if (root.TryGetProperty("status", out var s1))
         {
             status = s1.GetString() ?? "unknown";
         }
-
-        // 2) status v analyzeResult
         else if (root.TryGetProperty("analyzeResult", out var ar) &&
                  ar.TryGetProperty("status", out var s2))
         {
             status = s2.GetString() ?? "unknown";
         }
-
-        // 3) error
         else if (root.TryGetProperty("error", out var err))
         {
             _logger.LogError("DI error: {0}", err.ToString());
@@ -79,8 +72,8 @@ internal class DocInfo
 
         return (status, json);
     }
-
 }
+
 public class CheckDocAnalysis
 {
     private readonly ILogger<CheckDocAnalysis> _logger;
@@ -98,8 +91,6 @@ public class CheckDocAnalysis
             ?? throw new InvalidOperationException("DocIntelligenceEndpoint env variable is missing.");
         _docIntelligenceKey = Environment.GetEnvironmentVariable("DocIntelligenceKey")
             ?? throw new InvalidOperationException("DocIntelligenceKey env variable is missing.");
-
-
     }
 
     [Function("CheckDocAnalysis")]
@@ -139,11 +130,7 @@ public class CheckDocAnalysis
             {
                 status = "processing",
                 prefix,
-                documents = results.Select(r => new
-                {
-                    file = r.Doc.FileName,
-                    status = r.Status
-                })
+                documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
             });
         }
 
@@ -157,40 +144,42 @@ public class CheckDocAnalysis
             {
                 status = "failed",
                 prefix,
-                documents = results.Select(r => new
-                {
-                    file = r.Doc.FileName,
-                    status = r.Status
-                })
+                documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
             });
         }
 
-        // 3) Všechny dokumenty jsou hotové → uložit výsledky
+        // 3) Všechny dokumenty jsou hotové → uložit výsledky a poslat do Pásu 1
         foreach (var r in results)
         {
             SaveDocumentResult(prefix, r.Doc.FileName, r.Json);
             UpdateDocumentStatus(r.Doc.Id, "done");
-        }
 
+            // OPRAVENO: Posíláme jen lístek od úschovny
+            await QueueSender.SendToQueueAsync(QueueMessageType.EmbeddingRequest, new EmbedReqPayload
+            {
+                DocumentId = r.Doc.Id,
+                Prefix = prefix,
+                FileName = r.Doc.FileName
+            });
+        } // OPRAVA: Ukončení foreach cyklu
+
+        // OPRAVA: Posunuto MIMO foreach cyklus
         MarkAnalysisDone(prefix);
 
+        // OPRAVA: Zajištěn návrat hodnoty pro všechny cesty kódu
         return new OkObjectResult(new
         {
             status = "done",
             prefix,
-            documents = results.Select(r => new
-            {
-                file = r.Doc.FileName,
-                status = r.Status
-            })
+            documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
         });
     }
+
     private bool PrefixExistsInDatabase(string prefix)
     {
         using (var conn = new SqlConnection(_sql))
         {
             conn.Open();
-
             using (var cmd = new SqlCommand("SELECT COUNT(*) FROM analysis WHERE name = @p", conn))
             {
                 cmd.Parameters.AddWithValue("@p", prefix);
@@ -199,6 +188,7 @@ public class CheckDocAnalysis
             }
         }
     }
+
     private List<DocInfo> GetProcessingDocuments(string prefix)
     {
         var list = new List<DocInfo>();
@@ -210,8 +200,7 @@ public class CheckDocAnalysis
             SELECT d.id, d.file_name, d.operation_id, d.status
             FROM documents d
             JOIN analysis a ON d.analysis_id = a.id
-            WHERE a.name = @p AND d.status = 'processing';
-        ", conn);
+            WHERE a.name = @p AND d.status = 'processing';", conn);
 
         cmd.Parameters.AddWithValue("@p", prefix);
 
@@ -219,18 +208,14 @@ public class CheckDocAnalysis
         while (reader.Read())
         {
             list.Add(new DocInfo(
-                reader.GetGuid(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                _docIntelligenceEndpoint,
-                _docIntelligenceKey,
-                _logger
+                reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                _docIntelligenceEndpoint, _docIntelligenceKey, _logger
             ));
         }
 
         return list;
     }
+
     private void SaveDocumentResult(string prefix, string fileName, string json)
     {
         string folder = Path.Combine(Environment.CurrentDirectory, "analysis-results", prefix);
@@ -244,13 +229,9 @@ public class CheckDocAnalysis
     {
         using var conn = new SqlConnection(_sql);
         conn.Open();
-
-        using var cmd = new SqlCommand(
-            "UPDATE documents SET status = @status WHERE id = @id", conn);
-
+        using var cmd = new SqlCommand("UPDATE documents SET status = @status WHERE id = @id", conn);
         cmd.Parameters.AddWithValue("@id", id);
         cmd.Parameters.AddWithValue("@status", status);
-
         cmd.ExecuteNonQuery();
     }
 
@@ -258,13 +239,8 @@ public class CheckDocAnalysis
     {
         using var conn = new SqlConnection(_sql);
         conn.Open();
-
-        using var cmd = new SqlCommand(
-            "UPDATE analysis SET status = 'done' WHERE name = @p", conn);
-
+        using var cmd = new SqlCommand("UPDATE analysis SET status = 'done' WHERE name = @p", conn);
         cmd.Parameters.AddWithValue("@p", prefix);
         cmd.ExecuteNonQuery();
     }
-
 }
-
