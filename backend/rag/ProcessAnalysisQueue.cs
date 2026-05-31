@@ -7,7 +7,7 @@ using OpenAI.Chat;
 using rag.shared;
 using System;
 using System.Collections.Generic;
-using System.Data; // PŘIDÁNO: Potřebné pro SqlDbType
+using System.Data;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -51,7 +51,6 @@ namespace rag
                     jsonToParse = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
                 }
 
-                // Přímé dekódování do správného typu
                 var envelope = JsonSerializer.Deserialize<QueueEnvelope<SimilarityReqPayload>>(jsonToParse, options);
 
                 if (envelope == null || envelope.Type != QueueMessageType.SimilarityRequest)
@@ -66,7 +65,6 @@ namespace rag
                 using var conn = new SqlConnection(_sqlConnection);
                 await conn.OpenAsync();
 
-                // Promazání starých výsledků před novou analýzou
                 string sqlClearOld = "DELETE FROM risk_analysis_results WHERE document_id = @docId";
                 using (var cmdClear = new SqlCommand(sqlClearOld, conn))
                 {
@@ -74,9 +72,17 @@ namespace rag
                     await cmdClear.ExecuteNonQueryAsync();
                 }
 
-                // NAČTENÍ RIZIK Z DATABÁZE
-                var risks = new List<(Guid RiskId, string RiskCode, string RiskText, byte[] RiskEmbedding)>();
-                string sqlGetRisks = "SELECT id, risk_code, text, embedding FROM risk_vectors";
+                // VYNULOVÁNÍ SKÓRE před novou analýzou
+                string sqlResetScore = "UPDATE documents SET total_risk_score = 0 WHERE id = @docId";
+                using (var cmdReset = new SqlCommand(sqlResetScore, conn))
+                {
+                    cmdReset.Parameters.AddWithValue("@docId", docId);
+                    await cmdReset.ExecuteNonQueryAsync();
+                }
+
+                // Přidáno načtení i risk_weight z databáze, abychom to mohli použít při výpočtu
+                var risks = new List<(Guid RiskId, string RiskCode, string RiskText, int RiskWeight, byte[] RiskEmbedding)>();
+                string sqlGetRisks = "SELECT id, risk_code, text, risk_weight, embedding FROM risk_vectors";
 
                 using (var cmdRisk = new SqlCommand(sqlGetRisks, conn))
                 using (var reader = await cmdRisk.ExecuteReaderAsync())
@@ -87,6 +93,7 @@ namespace rag
                             reader.GetGuid(0),
                             reader.GetString(1),
                             reader.GetString(2),
+                            reader.GetInt32(3), // Načtení risk_weight
                             (byte[])reader["embedding"]
                         ));
                     }
@@ -97,31 +104,16 @@ namespace rag
                 var openAiClient = new AzureOpenAIClient(new Uri(_openAiEndpoint), new System.ClientModel.ApiKeyCredential(_openAiKey));
                 var chatClient = openAiClient.GetChatClient("gpt-4o-mini");
 
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
-                // PROJDEME KAŽDÉ RIZIKO A POŠLEME HO DO CHATGPT
+                float calculatedTotalScore = 0.0f;
+
                 foreach (var risk in risks)
                 {
                     _logger.LogInformation($"Hledám riziko {risk.RiskCode} v dokumentu {docId}");
 
-                    // 1. Z přečtených UTF-8 bajtů uděláme zpátky čistý JSON string
                     string jsonVector = Encoding.UTF8.GetString(risk.RiskEmbedding);
 
-                    // OPRAVA 2: Tady je ten zázračný trojitý CAST! 
-                    // Ty JSON bajty, co jsme si tam uložili, si tu převedeme zpátky na VARCHAR(MAX) 
-                    // a následně na nativní typ VECTOR. Azure SQL to bez remcání sežere.
-                    // OPRAVA 2: Čistý SQL dotaz
-                    // 2. ZMĚNA: SQL dotaz s dvojitým jištěním
-                    // @riskEmbedding se teď předává jako obyčejný VARCHAR a převede se nativně (protože to SQL z textu umí).
-                    // embedding sloupec se musí "oříznout" a pak převést na VECTOR.
-                    // 2. TOTO JE TA OPRAVA: Místo nefunkčního SUBSTRING použijeme tvrdý CAST na VARBINARY(8000), 
-                    // čímž sloupci 'embedding' definitivně sebereme přívlastek (MAX) a pak z něj teprve uděláme VECTOR.
-                    // 2. V SQL použijeme CAST z textu (VARCHAR) na VECTOR. Tohle je oficiálně podporovaná cesta!
                     string sqlVectorSearch = @"
-                        SELECT TOP 3 id, text 
+                        SELECT TOP 3 id, text, page_number 
                         FROM pdf_chunks 
                         WHERE document_id = @docId 
                         ORDER BY VECTOR_DISTANCE(
@@ -130,34 +122,51 @@ namespace rag
                             CAST(CAST(embedding AS VARCHAR(MAX)) AS VECTOR(1536))
                         ) ASC";
 
-                    var relevantChunks = new List<(Guid ChunkId, string Text)>();
+                    var relevantChunks = new List<(Guid ChunkId, string Text, int PageNumber)>();
 
                     using (var cmdSearch = new SqlCommand(sqlVectorSearch, conn))
                     {
                         cmdSearch.Parameters.AddWithValue("@docId", docId);
-
-                        // Posíláme do SQL čistý text (NVARCHAR). SQL Server zajásá.
                         cmdSearch.Parameters.AddWithValue("@riskEmbedding", jsonVector);
 
                         using (var reader = await cmdSearch.ExecuteReaderAsync())
                         {
                             while (await reader.ReadAsync())
                             {
-                                relevantChunks.Add((reader.GetGuid(0), reader.GetString(1)));
+                                relevantChunks.Add((
+                                    reader.GetGuid(0),
+                                    reader.GetString(1),
+                                    reader.GetInt32(2)
+                                ));
                             }
                         }
                     }
                     if (relevantChunks.Count == 0) continue;
 
-                    string combinedChunks = string.Join("\n\n--- DALŠÍ ODSTAVEC ---\n\n", relevantChunks.Select(c => c.Text));
+                    string combinedChunks = string.Join("\n\n--- DALŠÍ ODSTAVEC ---\n\n",
+                        relevantChunks.Select(c => $"[STRANA {c.PageNumber}]:\n{c.Text}"));
 
+                    string systemPrompt = $@"
+Jsi expertní právní asistent. Tvojí rolí je zhodnotit, zda je v poskytnutém textu smlouvy přítomno riziko typu: '{risk.RiskCode}'.
+Definice rizika: '{risk.RiskText}'.
+
+POZOR NA NEGACE A VYLOUČENÍ RIZIKA (Kritické pravidlo):
+Často se stává, že smlouva o daném tématu mluví, ale výslovně ho vylučuje. 
+Pokud text uvádí, že někdo 'nenese odpovědnost', 'riziko je vyloučeno', 'náklady nese druhá strana', 'neodpovídá' nebo 'nemá vliv', ZNAMENÁ TO, ŽE RIZIKO NENÍ PŘÍTOMNO. V takovém případě MUSÍŠ striktně nastavit coverage na 'none'. Nesmíš text označit jako rizikový jen proto, že obsahuje klíčová slova.
+
+PRAVIDLA PRO HODNOCENÍ (COVERAGE):
+- 'full': Riziko je v textu jasně a platně uplatněno (někdo ho reálně nese).
+- 'partial': V textu jsou náznaky nebo podmínky, ale uplatnění není stoprocentně jednoznačné.
+- 'none': Text o riziku buď vůbec nepojednává, NEBO ho výslovně vylučuje/negate.
+
+DŮLEŽITÉ PRAVIDLO PRO TVOJI ODPOVĚĎ A CITACE (EXPLANATION):
+Každý odstavec, který obdržíš, začíná informací o tom, na jaké je straně (např. [STRANA 5]:).
+Pokud je coverage 'full' nebo 'partial', MUSÍŠ do svého vysvětlení přidat krátkou citaci z textu a za ni uvést značku [[page:X]], kde X je číslo příslušné strany. 
+Příklad: 'Ve smlouvě je uvedeno, že zhotovitel nese vinu za zpoždění.' [[page:5]]
+Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví nebo bylo riziko výslovně vyloučeno) a stranu už neuváděj.";
                     var messages = new List<ChatMessage>
                     {
-                        new SystemChatMessage(
-                            $"Jsi expertní právní asistent. Tvojí rolí je zhodnotit, zda je v poskytnutém textu smlouvy přítomno riziko typu: '{risk.RiskCode}'.\n" +
-                            $"Definice rizika: '{risk.RiskText}'.\n" +
-                            "Vyhodnoť pouze texty, které obdržíš. Coverage nastav na 'full' (riziko je tam zcela jasně), 'partial' (jsou tam náznaky, ale není to jednoznačné) nebo 'none' (text o tomto riziku vůbec nepojednává)."
-                        ),
+                        new SystemChatMessage(systemPrompt),
                         new UserChatMessage("Zde jsou relevantní odstavce:\n\n" + combinedChunks)
                     };
 
@@ -184,7 +193,6 @@ namespace rag
                     var chatResponse = await chatClient.CompleteChatAsync(messages, chatOptions);
                     var aiResult = JsonSerializer.Deserialize<RiskAnalysisResult>(chatResponse.Value.Content[0].Text, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-                    // ULOŽENÍ VÝSLEDKU DO DATABÁZE
                     string chunkIdsJson = JsonSerializer.Serialize(relevantChunks.Select(c => c.ChunkId));
 
                     string sqlInsert = @"
@@ -202,17 +210,26 @@ namespace rag
 
                         await cmdInsert.ExecuteNonQueryAsync();
                     }
+
+                    // VÝPOČET SKÓRE PRO TOTO RIZIKO A PŘIČTENÍ DO CELKOVÉHO
+                    float multiplier = 0.0f;
+                    if (aiResult.Coverage == "full") multiplier = 1.0f;
+                    else if (aiResult.Coverage == "partial") multiplier = 0.5f;
+
+                    float riskScore = risk.RiskWeight * multiplier;
+                    calculatedTotalScore += riskScore;
                 }
 
-                // DOKONČENÍ ANALÝZY
-                string sqlUpdateStatus = "UPDATE documents SET status = 'done' WHERE id = @docId";
-                using (var cmdUpdate = new SqlCommand(sqlUpdateStatus, conn))
+                // DOKONČENÍ ANALÝZY A ULOŽENÍ VÝSLEDNÉHO SKÓRE
+                string sqlUpdateStatusAndScore = "UPDATE documents SET status = 'done', total_risk_score = @score WHERE id = @docId";
+                using (var cmdUpdate = new SqlCommand(sqlUpdateStatusAndScore, conn))
                 {
                     cmdUpdate.Parameters.AddWithValue("@docId", docId);
+                    cmdUpdate.Parameters.AddWithValue("@score", calculatedTotalScore);
                     await cmdUpdate.ExecuteNonQueryAsync();
                 }
 
-                _logger.LogInformation($"Hotovo! Rizika pro dokument {docId} byla úspěšně vyhodnocena a uložena.");
+                _logger.LogInformation($"Hotovo! Rizika pro dokument {docId} byla vyhodnocena. Celkové skóre: {calculatedTotalScore}");
             }
             catch (Exception ex)
             {

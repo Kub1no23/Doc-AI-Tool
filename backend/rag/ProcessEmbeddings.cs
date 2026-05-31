@@ -1,21 +1,22 @@
-﻿using Microsoft.Azure.Functions.Worker;
+﻿using Azure.AI.OpenAI; // Tady už to správně máš
+using Azure.Storage.Blobs;
+using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using OpenAI;
 using OpenAI.Embeddings;
 using rag;
 using rag.shared;
+using System;
 using System.ClientModel;
+using System.Collections.Generic;
 using System.Data;
-using Azure.AI.OpenAI; // Tady už to správně máš
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
-using System.IO;
 
 public class EmbeddingService
 {
@@ -84,21 +85,27 @@ public class ProcessEmbeddings
 
         var payload = envelope.Payload;
 
-        // ---------------------------------------------------------
-        // CLAIM CHECK PATTERN (Úschovna zavazadel)
-        // Nečteme JSON z fronty, ale vyzvedneme ho z lokálního disku
-        // ---------------------------------------------------------
-        string folder = Path.Combine(Environment.CurrentDirectory, "analysis-results", payload.Prefix);
-        string filePath = Path.Combine(folder, $"{payload.FileName}.json");
+     
 
-        if (!File.Exists(filePath))
+        // ---------------------------------------------------------
+        // CLOUD CLAIM CHECK: Vyzvednutí výsledků z Azure Blob Storage
+        // ---------------------------------------------------------
+        string connectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
+        BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
+        BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient("ocr-results");
+
+        string blobName = $"{payload.Prefix}/{payload.FileName}.json";
+        BlobClient blobClient = containerClient.GetBlobClient(blobName);
+
+        if (!await blobClient.ExistsAsync())
         {
-            _logger.LogError($"JSON data chybí na disku! Hledáno: {filePath}");
+            _logger.LogError($"JSON data chybí v Blobu! Hledáno: {blobName}");
             return;
         }
 
-        _logger.LogInformation($"Čtu JSON z disku: {filePath}");
-        string jsonContent = await File.ReadAllTextAsync(filePath);
+        _logger.LogInformation($"Čtu JSON z Blobu: {blobName}");
+        var response = await blobClient.DownloadContentAsync();
+        string jsonContent = response.Value.Content.ToString();
 
         using var jsonDoc = JsonDocument.Parse(jsonContent);
         var analyzeResult = jsonDoc.RootElement.GetProperty("analyzeResult");

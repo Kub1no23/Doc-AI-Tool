@@ -1,18 +1,20 @@
-﻿using Grpc.Core;
+﻿using Azure.Storage.Blobs;
+using Grpc.Core;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
+using rag.shared;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using System;
 using System.Net.Http;
-using rag.shared;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 internal class DocInfo
 {
@@ -151,30 +153,29 @@ public class CheckDocAnalysis
         // 3) Všechny dokumenty jsou hotové → uložit výsledky a poslat do Pásu 1
         foreach (var r in results)
         {
-            SaveDocumentResult(prefix, r.Doc.FileName, r.Json);
+            // OPRAVA 1: Voláme novou asynchronní funkci s await
+            await SaveDocumentResultAsync(prefix, r.Doc.FileName, r.Json);
+
             UpdateDocumentStatus(r.Doc.Id, "done");
 
-            // OPRAVENO: Posíláme jen lístek od úschovny
             await QueueSender.SendToQueueAsync(QueueMessageType.EmbeddingRequest, new EmbedReqPayload
             {
                 DocumentId = r.Doc.Id,
                 Prefix = prefix,
                 FileName = r.Doc.FileName
             });
-        } // OPRAVA: Ukončení foreach cyklu
+        }
 
-        // OPRAVA: Posunuto MIMO foreach cyklus
         MarkAnalysisDone(prefix);
 
-        // OPRAVA: Zajištěn návrat hodnoty pro všechny cesty kódu
+        // OPRAVA 2: Frontendista potřebuje ID dokumentu pro další API volání
         return new OkObjectResult(new
         {
             status = "done",
             prefix,
-            documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
+            documents = results.Select(r => new { id = r.Doc.Id, file = r.Doc.FileName, status = r.Status })
         });
-    }
-
+    } // Konec funkce Run
     private bool PrefixExistsInDatabase(string prefix)
     {
         using (var conn = new SqlConnection(_sql))
@@ -216,13 +217,25 @@ public class CheckDocAnalysis
         return list;
     }
 
-    private void SaveDocumentResult(string prefix, string fileName, string json)
+    private async Task SaveDocumentResultAsync(string prefix, string fileName, string json)
     {
-        string folder = Path.Combine(Environment.CurrentDirectory, "analysis-results", prefix);
-        Directory.CreateDirectory(folder);
+        // 1. Získáme přístup k Azure Storage (použijeme ten výchozí, co má Function App v sobě)
+        string connectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
+        BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
 
-        string filePath = Path.Combine(folder, $"{fileName}.json");
-        File.WriteAllText(filePath, json);
+        // 2. Připojíme se ke kontejneru "ocr-results" (pokud neexistuje, vytvoří se)
+        BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient("ocr-results");
+        await containerClient.CreateIfNotExistsAsync();
+
+        // 3. Vytvoříme jméno souboru. Lomítko v Blobu funguje jako virtuální složka!
+        string blobName = $"{prefix}/{fileName}.json";
+        BlobClient blobClient = containerClient.GetBlobClient(blobName);
+
+        // 4. Nahrajeme náš obrovský JSON přímo do cloudu
+        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+        {
+            await blobClient.UploadAsync(stream, overwrite: true);
+        }
     }
 
     private void UpdateDocumentStatus(Guid id, string status)
