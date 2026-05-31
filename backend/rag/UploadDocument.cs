@@ -18,7 +18,7 @@ namespace rag
         {
             _logger = logger;
             // Použijeme stejný connection string jako máme pro Queue (frontu)
-            _blobConnectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage") ?? throw new Exception("Chybí AzureWebJobsStorage");
+            _blobConnectionString = Environment.GetEnvironmentVariable("MyDataStorage") ?? throw new Exception("Chybí MyDataStorage");
         }
 
         [Function("UploadDocument")]

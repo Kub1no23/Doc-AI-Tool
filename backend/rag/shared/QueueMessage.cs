@@ -60,7 +60,7 @@ namespace rag.shared
             };
 
             // 2. Vytvoření klienta rovnou pro tu správnou frontu
-            var queueClient = new QueueClient(Environment.GetEnvironmentVariable("AzureWebJobsStorage"), queueName);
+            var queueClient = new QueueClient(Environment.GetEnvironmentVariable("MyDataStorage"), queueName);
             await queueClient.CreateIfNotExistsAsync();
 
             // 3. Odeslání Base64 obálky

@@ -38,7 +38,7 @@ namespace rag
         }
 
         [Function(nameof(ProcessAnalysisQueue))]
-        public async Task Run([QueueTrigger("ai-analysis-queue", Connection = "AzureWebJobsStorage")] string queueMessage)
+        public async Task Run([QueueTrigger("ai-analysis-queue", Connection = "MyDataStorage")] string queueMessage)
         {
             try
             {

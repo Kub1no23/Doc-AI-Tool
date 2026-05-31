@@ -66,7 +66,7 @@ public class ProcessEmbeddings
     }
 
     [Function("ProcessEmbeddings")]
-    public async Task Run([QueueTrigger("pdf-embedding-queue", Connection = "AzureWebJobsStorage")] string message)
+    public async Task Run([QueueTrigger("pdf-embedding-queue", Connection = "MyDataStorage")] string message)
     {
         _logger.LogInformation("Received queue message");
 
@@ -90,7 +90,7 @@ public class ProcessEmbeddings
         // ---------------------------------------------------------
         // CLOUD CLAIM CHECK: Vyzvednutí výsledků z Azure Blob Storage
         // ---------------------------------------------------------
-        string connectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
+        string connectionString = Environment.GetEnvironmentVariable("MyDataStorage");
         BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
         BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient("ocr-results");
 

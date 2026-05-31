@@ -220,7 +220,7 @@ public class CheckDocAnalysis
     private async Task SaveDocumentResultAsync(string prefix, string fileName, string json)
     {
         // 1. Získáme přístup k Azure Storage (použijeme ten výchozí, co má Function App v sobě)
-        string connectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
+        string connectionString = Environment.GetEnvironmentVariable("MyDataStorage");
         BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
 
         // 2. Připojíme se ke kontejneru "ocr-results" (pokud neexistuje, vytvoří se)
