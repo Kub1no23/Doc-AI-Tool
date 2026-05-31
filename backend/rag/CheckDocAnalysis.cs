@@ -130,7 +130,7 @@ public class CheckDocAnalysis
             {
                 status = "processing",
                 prefix,
-                documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
+                documents = results.Select(r => new { id = r.Doc.Id, file = r.Doc.FileName, status = r.Status })
             });
         }
 
