@@ -21,7 +21,7 @@ public class Analysis
     }
 
     [Function("CreateAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "analysis")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "analysis/create")] HttpRequest req)
     {
         string? analysisName = req.Query["name"];
         if (string.IsNullOrWhiteSpace(analysisName))
