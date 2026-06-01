@@ -55,11 +55,11 @@ namespace rag
 
             if (analysisId == Guid.Empty) return new NotFoundObjectResult(new { error = "Projekt nenalezen." });
 
-            // Pokud už je hotové z minula, rovnou ho vrátíme (šetříme peníze a API volání)
-            if (!string.IsNullOrEmpty(existingSummary))
-            {
-                return new OkObjectResult(new { summary = existingSummary });
-            }
+            //// Pokud už je hotové z minula, rovnou ho vrátíme (šetříme peníze a API volání)
+            //if (!string.IsNullOrEmpty(existingSummary))
+            //{
+            //    return new OkObjectResult(new { summary = existingSummary });
+            //}
 
             // 2. Pokud není, vytáhneme výsledky všech dokumentů z databáze
             string sqlDocs = "SELECT file_name, total_risk_score FROM documents WHERE analysis_id = @analysisId ORDER BY total_risk_score ASC";
@@ -102,14 +102,14 @@ Piš profesionálně, sebevědomě a logicky strukturovaně.";
             var chatResponse = await chatClient.CompleteChatAsync(messages);
             string generatedMarkdown = chatResponse.Value.Content[0].Text;
 
-            // 4. Uložíme do databáze, ať už to nikdy nemusíme generovat znovu
-            string sqlUpdate = "UPDATE analysis SET final_synthesis_markdown = @md WHERE id = @analysisId";
-            using (var cmdUpdate = new SqlCommand(sqlUpdate, conn))
-            {
-                cmdUpdate.Parameters.AddWithValue("@md", generatedMarkdown);
-                cmdUpdate.Parameters.AddWithValue("@analysisId", analysisId);
-                await cmdUpdate.ExecuteNonQueryAsync();
-            }
+            //    // 4. Uložíme do databáze, ať už to nikdy nemusíme generovat znovu
+            //    string sqlUpdate = "UPDATE analysis SET final_synthesis_markdown = @md WHERE id = @analysisId";
+            //    using (var cmdUpdate = new SqlCommand(sqlUpdate, conn))
+            //    {
+            //        cmdUpdate.Parameters.AddWithValue("@md", generatedMarkdown);
+            //        cmdUpdate.Parameters.AddWithValue("@analysisId", analysisId);
+            //        await cmdUpdate.ExecuteNonQueryAsync();
+            //    }
 
             return new OkObjectResult(new { summary = generatedMarkdown });
         }
