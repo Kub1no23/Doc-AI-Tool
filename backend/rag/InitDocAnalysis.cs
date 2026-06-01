@@ -98,7 +98,10 @@ public class InitDocAnalysis
             prefix: $"{prefix}/",
             cancellationToken: default))
         {
-            if (blob.Name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            if (blob.Name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
+                blob.Name.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                blob.Name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                blob.Name.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase))
             {
                 urls.Add($"{container.Uri}/{blob.Name}");
             }
