@@ -17,7 +17,7 @@ CREATE TABLE documents (
     pdf_url NVARCHAR(MAX) NOT NULL,
     operation_id NVARCHAR(255) NULL,
     status NVARCHAR(50) NOT NULL 
-        CONSTRAINT chk_documents_status CHECK (status IN ('pending', 'processing', 'done', 'error'))
+        CONSTRAINT chk_documents_status CHECK (status IN ('pending', 'processing', 'processing_ai', 'done', 'error'))
         DEFAULT 'processing',
     total_risk_score FLOAT DEFAULT 0,
     ranking_position INT NULL,

@@ -104,76 +104,72 @@ public class CheckDocAnalysis
         if (!PrefixExistsInDatabase(prefix))
             return new BadRequestObjectResult("Invalid prefix.");
 
-        var docs = GetProcessingDocuments(prefix);
-        if (docs.Count == 0)
+        // 1. Zjistíme stav VŠECH dokumentů v tomto tendru
+        var allDocs = GetAllDocumentsForPrefix(prefix);
+        if (allDocs.Count == 0)
         {
-            return new BadRequestObjectResult(new
+            return new BadRequestObjectResult("No documents found for this analysis.");
+        }
+
+        // 2. Najdeme ty, co ještě čekají na OCR čtení (fáze 1)
+        var ocrDocs = allDocs.Where(d => d.Status == "processing").ToList();
+
+        foreach (var doc in ocrDocs)
+        {
+            var (diStatus, json) = await doc.FetchOperationAsync();
+
+            if (diStatus is "failed" or "unknown")
             {
-                message = "No documents are currently processing for this analysis.",
-                prefix
-            });
+                UpdateDocumentStatus(doc.Id, "error");
+                doc.Status = "error";
+            }
+            else if (diStatus == "succeeded")
+            {
+                // OCR je hotové -> uložíme text
+                await SaveDocumentResultAsync(prefix, doc.FileName, json);
+
+                // OPRAVA: Měníme status na 'processing_ai', nikoliv rovnou na 'done'!
+                UpdateDocumentStatus(doc.Id, "processing_ai");
+                doc.Status = "processing_ai";
+
+                // Pošleme text do AI fronty
+                await QueueSender.SendToQueueAsync(QueueMessageType.EmbeddingRequest, new EmbedReqPayload
+                {
+                    DocumentId = doc.Id,
+                    Prefix = prefix,
+                    FileName = doc.FileName
+                });
+            }
         }
 
-        // FÁZE 1 — stáhnout výsledky všech dokumentů
-        var results = new List<(DocInfo Doc, string Status, string Json)>();
+        // 3. Zjistíme, jestli se ještě na nějakém dokumentu pracuje (ať už čte, nebo běží AI)
+        bool isAnyProcessing = allDocs.Any(d => d.Status == "processing" || d.Status == "processing_ai");
+        bool hasError = allDocs.Any(d => d.Status == "error");
 
-        foreach (var doc in docs)
+        if (hasError)
         {
-            var (status, json) = await doc.FetchOperationAsync();
-            results.Add((doc, status, json));
+            return new OkObjectResult(new { status = "failed", prefix });
         }
 
-        // FÁZE 2 — vyhodnocení
-
-        // 1) Některý dokument stále běží
-        if (results.Any(r => r.Status is "notStarted" or "running"))
+        if (isAnyProcessing)
         {
+            // Frontend musí dál čekat (polling pokračuje)
             return new OkObjectResult(new
             {
                 status = "processing",
                 prefix,
-                documents = results.Select(r => new { id = r.Doc.Id, file = r.Doc.FileName, status = r.Status })
+                documents = allDocs.Select(d => new { id = d.Id, file = d.FileName, status = d.Status })
             });
         }
 
-        // 2) Některý dokument failnul
-        var failed = results.FirstOrDefault(r => r.Status is "failed" or "unknown");
-        if (failed.Doc != null)
-        {
-            UpdateDocumentStatus(failed.Doc.Id, "error");
-
-            return new OkObjectResult(new
-            {
-                status = "failed",
-                prefix,
-                documents = results.Select(r => new { file = r.Doc.FileName, status = r.Status })
-            });
-        }
-
-        // 3) Všechny dokumenty jsou hotové → uložit výsledky a poslat do Pásu 1
-        foreach (var r in results)
-        {
-            // OPRAVA 1: Voláme novou asynchronní funkci s await
-            await SaveDocumentResultAsync(prefix, r.Doc.FileName, r.Json);
-
-            UpdateDocumentStatus(r.Doc.Id, "done");
-
-            await QueueSender.SendToQueueAsync(QueueMessageType.EmbeddingRequest, new EmbedReqPayload
-            {
-                DocumentId = r.Doc.Id,
-                Prefix = prefix,
-                FileName = r.Doc.FileName
-            });
-        }
-
+        // 4. Pokud už nic nepracuje (ProcessAnalysisQueue přepsal 'processing_ai' na 'done'), můžeme to definitivně uzavřít
         MarkAnalysisDone(prefix);
 
-        // OPRAVA 2: Frontendista potřebuje ID dokumentu pro další API volání
         return new OkObjectResult(new
         {
             status = "done",
             prefix,
-            documents = results.Select(r => new { id = r.Doc.Id, file = r.Doc.FileName, status = r.Status })
+            documents = allDocs.Select(d => new { id = d.Id, file = d.FileName, status = d.Status })
         });
     } // Konec funkce Run
     private bool PrefixExistsInDatabase(string prefix)
@@ -190,7 +186,7 @@ public class CheckDocAnalysis
         }
     }
 
-    private List<DocInfo> GetProcessingDocuments(string prefix)
+    private List<DocInfo> GetAllDocumentsForPrefix(string prefix)
     {
         var list = new List<DocInfo>();
 
@@ -198,10 +194,10 @@ public class CheckDocAnalysis
         conn.Open();
 
         using var cmd = new SqlCommand(@"
-            SELECT d.id, d.file_name, d.operation_id, d.status
-            FROM documents d
-            JOIN analysis a ON d.analysis_id = a.id
-            WHERE a.name = @p AND d.status = 'processing';", conn);
+        SELECT d.id, d.file_name, d.operation_id, d.status
+        FROM documents d
+        JOIN analysis a ON d.analysis_id = a.id
+        WHERE a.name = @p;", conn); // Smazali jsme podmínku na d.status
 
         cmd.Parameters.AddWithValue("@p", prefix);
 
