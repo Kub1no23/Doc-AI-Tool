@@ -17,7 +17,6 @@ namespace rag
         public GetDocuments(ILogger<GetDocuments> logger)
         {
             _logger = logger;
-            // Načtení connection stringu
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
         }
 
@@ -35,10 +34,9 @@ namespace rag
             using var conn = new SqlConnection(_sqlConnection);
             await conn.OpenAsync();
 
-            // SQL dotaz, který najde všechny dokumenty pro daný název analýzy (prefix)
-            // Řadíme podle toho, jak byly vytvořeny (od nejstaršího po nejnovější)
+    // /SQL dotaz rozšířen o vytáhnutí data(created_at)
             string sql = @"
-                SELECT d.id, d.file_name, d.status 
+                SELECT d.id, d.file_name, d.status, d.total_risk_score, d.pdf_url, d.created_at
                 FROM documents d
                 JOIN analysis a ON d.analysis_id = a.id
                 WHERE a.name = @prefix
@@ -49,18 +47,19 @@ namespace rag
 
             using var reader = await cmd.ExecuteReaderAsync();
 
-            // Přečteme řádky z DB a poskládáme JSON objekty
             while (await reader.ReadAsync())
             {
                 documents.Add(new
                 {
                     documentId = reader.GetGuid(0),
                     fileName = reader.GetString(1),
-                    status = reader.GetString(2)
+                    status = reader.GetString(2),
+                    totalRiskScore = reader.GetDouble(3),
+                    pdfUrl = reader.GetString(4),
+                    createdAt = reader.GetDateTime(5) // Přidáno: Čas nahrání dokumentu
                 });
             }
 
-            // Vrátíme seznam (i kdyby byl prázdný, FE dostane prázdné pole [], což je lepší než házet chybu)
             return new OkObjectResult(documents);
         }
     }
