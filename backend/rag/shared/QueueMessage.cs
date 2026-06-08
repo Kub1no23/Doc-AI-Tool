@@ -20,7 +20,7 @@ namespace rag.shared
     public class QueueEnvelope<T>
     {
         public QueueMessageType Type { get; set; }
-        public T Payload { get; set; }
+        public T Payload { get; set; }  //data
     }
 
     // Speciální payloady (obsahy zpráv) pro jednotlivé typy úkolů
