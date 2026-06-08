@@ -34,9 +34,9 @@ namespace rag
             using var conn = new SqlConnection(_sqlConnection);
             await conn.OpenAsync();
 
-    // /SQL dotaz rozšířen o vytáhnutí data(created_at)
+            // SQL dotaz je nyní oříznutý o pdf_url, zbytečně netaháme data navíc
             string sql = @"
-                SELECT d.id, d.file_name, d.status, d.total_risk_score, d.pdf_url, d.created_at
+                SELECT d.id, d.file_name, d.status, d.total_risk_score, d.created_at
                 FROM documents d
                 JOIN analysis a ON d.analysis_id = a.id
                 WHERE a.name = @prefix
@@ -54,9 +54,8 @@ namespace rag
                     documentId = reader.GetGuid(0),
                     fileName = reader.GetString(1),
                     status = reader.GetString(2),
-                    totalRiskScore = reader.GetDouble(3),
-                    pdfUrl = reader.GetString(4),
-                    createdAt = reader.GetDateTime(5) // Přidáno: Čas nahrání dokumentu
+                    totalRiskScore = reader.IsDBNull(3) ? 0.0 : reader.GetDouble(3),
+                    createdAt = reader.GetDateTime(4)
                 });
             }
 
