@@ -38,12 +38,16 @@ namespace rag
             // Vytáhneme výsledky analýzy a spojíme je s definicí rizik.
             // Seřadíme je tak, aby 'full' rizika byla nahoře, pak 'partial' a nakonec 'none'.
             string sql = @"
-                SELECT rv.risk_code, rv.text, rar.coverage, rar.explanation
-                FROM risk_analysis_results rar
-                JOIN risk_vectors rv ON rar.risk_id = rv.id
-                WHERE rar.document_id = @docId
+                SELECT 
+                    rv.risk_code, 
+                    rv.text, 
+                    ISNULL(rar.coverage, 'none') AS coverage, 
+                    ISNULL(rar.explanation, 'AI systém toto riziko nenašel, nebo k němu nevygeneroval popis.') AS explanation
+                FROM risk_vectors rv
+                LEFT JOIN risk_analysis_results rar 
+                    ON rv.id = rar.risk_id AND rar.document_id = @docId
                 ORDER BY 
-                    CASE rar.coverage 
+                    CASE ISNULL(rar.coverage, 'none')
                         WHEN 'full' THEN 1 
                         WHEN 'partial' THEN 2 
                         WHEN 'none' THEN 3 
