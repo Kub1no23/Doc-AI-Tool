@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 
 namespace rag
 {
@@ -55,12 +56,34 @@ namespace rag
             using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
+                // 1. Uložíme si původní hrubou odpověď od AI do proměnné
+                string rawExplanation = reader.GetString(3);
+
+                // Připravíme si prázdný seznam pro případ, že AI vrátí více odkazů na stránky
+                var pageNumbers = new List<int>();
+
+                // 2. Extrakce všech výskytů tagů stránek (např. [[page:5]])
+                var matches = Regex.Matches(rawExplanation, @"\[\[page:\s*(\d+)\s*\]\]");
+                foreach (Match match in matches)
+                {
+                    // Převedeme vytažený text na číslo a přidáme do pole (pokud tam ještě není)
+                    if (int.TryParse(match.Groups[1].Value, out int page) && !pageNumbers.Contains(page))
+                    {
+                        pageNumbers.Add(page);
+                    }
+                }
+
+                // 3. Odstranění tagů z původního textu a oříznutí zbytečných mezer na koncích
+                string cleanExplanation = Regex.Replace(rawExplanation, @"\[\[page:\s*\d+\s*\]\]", "").Trim();
+
+                // 4. Přidání do finálního výsledku pro frontend
                 results.Add(new
                 {
                     riskCode = reader.GetString(0),
                     riskName = reader.GetString(1),
                     coverage = reader.GetString(2),
-                    explanation = reader.GetString(3)
+                    explanation = cleanExplanation, // Očištěný text
+                    pages = pageNumbers             // Samostatné pole intů (např. [5, 7] nebo [])
                 });
             }
 
