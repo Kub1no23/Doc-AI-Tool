@@ -6,25 +6,24 @@ using Azure.Storage.Queues;
 
 namespace rag.shared
 {
-    // Definice všech možných typů zpráv ve frontě
     public enum QueueMessageType
     {
-        EmbeddingRequest = 1,
-        SimilarityRequest = 2,
-        DocumentAnalysisCompleted = 3,
-        PdfImageExtraction = 4,
-        CleanupTask = 5
+        DocAIRequest = 1,
+        EmbeddingRequest = 2,
+        SimilarityRequest = 3,
     }
 
-    // Univerzální obálka (přepravka) pro zprávy
     public class QueueEnvelope<T>
     {
         public QueueMessageType Type { get; set; }
         public T Payload { get; set; }
     }
 
-    // Speciální payloady (obsahy zpráv) pro jednotlivé typy úkolů
-    // UPRAVENO: Vyhodili jsme obří JsonElement a přidali jméno souboru
+
+    public class DocAIReqPayload
+    {
+        public string Prefix { get; set; }
+    }
     public class EmbedReqPayload
     {
         public Guid DocumentId { get; set; }
@@ -37,7 +36,7 @@ namespace rag.shared
         public Guid DocumentId { get; set; }
     }
 
-    // Pomocná třída pro balení a rozbalování zpráv (Base64)
+
     internal class QueueMessageHelper
     {
         private static readonly JsonSerializerOptions _options = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -46,25 +45,25 @@ namespace rag.shared
         public static T? Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, _options);
     }
 
-    // Pomocná třída pro snadné odesílání zpráv
     public static class QueueSender
     {
-        public static async Task SendToQueueAsync<T>(QueueMessageType type, T payload)
+        public static async Task SendToQueueAsync<T>(QueueMessageType type, T payload, double delaySec = 0)
         {
-            // 1. ZDE JE ZMĚNA: Chytré zjištění správného názvu fronty podle typu zprávy
             string queueName = type switch
             {
-                QueueMessageType.EmbeddingRequest => "pdf-embedding-queue", // Pás 1 pro kolegu
-                QueueMessageType.SimilarityRequest => "ai-analysis-queue",  // Pás 2 pro tvoji AI
-                _ => "ragqueue-default" // Záložní fronta pro ostatní/staré typy
+                QueueMessageType.DocAIRequest => "pdf-json-queue",
+                QueueMessageType.EmbeddingRequest => "pdf-embedding-queue",
+                QueueMessageType.SimilarityRequest => "ai-analysis-queue",
+                _ => "ragqueue-default"
             };
 
-            // 2. Vytvoření klienta rovnou pro tu správnou frontu
             var queueClient = new QueueClient(Environment.GetEnvironmentVariable("MyDataStorage"), queueName);
             await queueClient.CreateIfNotExistsAsync();
 
-            // 3. Odeslání Base64 obálky
-            await queueClient.SendMessageAsync(QueueMessageHelper.Serialize(new QueueEnvelope<T> { Type = type, Payload = payload }));
+            await queueClient.SendMessageAsync(
+                QueueMessageHelper.Serialize(new QueueEnvelope<T> { Type = type, Payload = payload }),
+                visibilityTimeout: TimeSpan.FromSeconds(delaySec)
+            );
         }
     }
 }

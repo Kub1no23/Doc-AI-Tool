@@ -7,6 +7,7 @@ using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
 using System.Data;
 using Microsoft.Data.SqlClient;
+using static rag.shared.General;
 
 namespace rag;
 
@@ -25,45 +26,15 @@ public class GetSasToken
             ?? throw new InvalidOperationException("SqlConnection env variable is missing.");
     }
 
-    private string GetAccountKeyFromConnectionString()
-    {
-        var parts = _connectionString.Split(';');
-
-        foreach (var part in parts)
-        {
-            if (part.StartsWith("AccountKey=", StringComparison.OrdinalIgnoreCase))
-            {
-                return part.Substring("AccountKey=".Length);
-            }
-        }
-
-        throw new Exception("AccountKey not found in connection string.");
-    }
-    private async Task<bool> PrefixExistsInDatabaseAsync(string prefix)
-    {
-        using (var conn = new SqlConnection(_sql))
-        {
-            await conn.OpenAsync();
-
-            using (var cmd = new SqlCommand("SELECT COUNT(*) FROM analysis WHERE name = @p", conn))
-            {
-                cmd.Parameters.AddWithValue("@p", prefix);
-
-                int count = (int)await cmd.ExecuteScalarAsync();
-                return count > 0;
-            }
-        }
-    }
-
     [Function("GetSasToken")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", Route = "documents/token")] HttpRequest req)
     {
         _logger.LogInformation("SAS token request for Blob Storage");
 
         string? prefix = req.Query["prefix"];
         if (string.IsNullOrWhiteSpace(prefix))
             return new BadRequestObjectResult("Missing prefix query parameter.");
-        if (!await PrefixExistsInDatabaseAsync(prefix))
+        if (!await PrefixExistsInDatabaseAsync(_sql, prefix))
             return new BadRequestObjectResult("Invalid prefix.");
 
         string? mode = req.Query["mode"];
@@ -100,5 +71,20 @@ public class GetSasToken
             prefix,
             expires = sasBuilder.ExpiresOn
         });
+    }
+
+    private string GetAccountKeyFromConnectionString()
+    {
+        var parts = _connectionString.Split(';');
+
+        foreach (var part in parts)
+        {
+            if (part.StartsWith("AccountKey=", StringComparison.OrdinalIgnoreCase))
+            {
+                return part.Substring("AccountKey=".Length);
+            }
+        }
+
+        throw new Exception("AccountKey not found in connection string.");
     }
 }

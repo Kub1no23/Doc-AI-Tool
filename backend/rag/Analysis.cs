@@ -21,7 +21,7 @@ public class Analysis
     }
 
     [Function("CreateAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "analysis/create")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "analysis")] HttpRequest req)
     {
         string? analysisName = req.Query["name"];
         if (string.IsNullOrWhiteSpace(analysisName))
@@ -87,16 +87,16 @@ public class Analysis
             await conn.OpenAsync();
 
             string sql = @"
-    SELECT 
-        id,
-        name,
-        status,
-        final_synthesis_markdown,
-        created_at,
-        updated_at
-    FROM analysis
-    ORDER BY created_at DESC;
-";
+                SELECT 
+                    id,
+                    name,
+                    status,
+                    final_synthesis_markdown,
+                    created_at,
+                    updated_at
+                FROM analysis
+                ORDER BY created_at DESC;
+            ";
 
             try
             {
@@ -112,7 +112,6 @@ public class Analysis
                             id = reader.GetGuid(0),
                             name = reader.GetString(1),
                             status = reader.GetString(2),
-                            // Zrušili jsme operation_id, takže se indexy posunuly:
                             final_synthesis_markdown = reader.IsDBNull(3) ? null : reader.GetString(3),
                             created_at = reader.GetDateTime(4),
                             updated_at = reader.GetDateTime(5)

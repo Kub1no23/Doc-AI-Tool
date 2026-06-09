@@ -9,6 +9,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System.Data;
+using rag.shared;
+using static rag.shared.General;
 
 namespace rag;
 
@@ -38,14 +40,14 @@ public class InitDocAnalysis
     }
 
     [Function("InitDocAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "documents/analyze")] HttpRequest req)
     {
         _logger.LogInformation("InitializeDocumentAnalysis called");
 
         string? prefix = req.Query["prefix"];
         if (string.IsNullOrWhiteSpace(prefix))
             return new BadRequestObjectResult("Missing prefix query parameter.");
-        if (!await PrefixExistsInDatabaseAsync(prefix))
+        if (!await PrefixExistsInDatabaseAsync(_sql, prefix))
             return new BadRequestObjectResult("Invalid prefix.");
 
         var blobNames = await GetBlobNames(prefix);
@@ -60,6 +62,8 @@ public class InitDocAnalysis
 
         await SaveOperationToDatabaseAsync(prefix);
 
+        await QueueSender.SendToQueueAsync(QueueMessageType.DocAIRequest, new DocAIReqPayload { Prefix = prefix }, delaySec: 100);
+
         return new OkObjectResult(new
         {
             status = "processing",
@@ -67,21 +71,6 @@ public class InitDocAnalysis
         });
     }
 
-    private async Task<bool> PrefixExistsInDatabaseAsync(string prefix)
-    {
-        using (var conn = new SqlConnection(_sql))
-        {
-            await conn.OpenAsync();
-
-            using (var cmd = new SqlCommand("SELECT COUNT(*) FROM analysis WHERE name = @p", conn))
-            {
-                cmd.Parameters.AddWithValue("@p", prefix);
-
-                int count = (int)await cmd.ExecuteScalarAsync();
-                return count > 0;
-            }
-        }
-    }
 
     private async Task<List<string>> GetBlobNames(string prefix)
     {
