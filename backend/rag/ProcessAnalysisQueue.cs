@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 
 namespace rag
 {
-    // Přepravka pro odpověď od ChatGPT
+ 
     public class RiskAnalysisResult
     {
         public string Coverage { get; set; }
@@ -37,22 +37,27 @@ namespace rag
             _openAiKey = Environment.GetEnvironmentVariable("OpenAI__ApiKey") ?? throw new Exception("Chybí OpenAI__ApiKey");
         }
 
+
+        //po ziskani zpravy z ai-analysis-queue s docID, se zprava preda do queueMessage
         [Function(nameof(ProcessAnalysisQueue))]
         public async Task Run([QueueTrigger("ai-analysis-queue", Connection = "MyDataStorage")] string queueMessage)
         {
+            //QueueTrigger - Pristane zprava ve fronte ai-analysis-queue - spust tohle a obas dej do varuable queueMessage
             try
             {
                 var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
                 string jsonToParse = queueMessage;
 
-                // Kontrola Base64
+                // Kontrola Base64 - pokud to nezacina zavorkou - je to Base64(zpravy ve frontach se historicky posilali a je to dost hnusne akodovane) -> musime dekodovat na json
                 if (!queueMessage.Trim().StartsWith("{"))
                 {
                     jsonToParse = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
                 }
 
-                var envelope = JsonSerializer.Deserialize<QueueEnvelope<SimilarityReqPayload>>(jsonToParse, options);
 
+                //changed SimilarityReqPayload for EmbedReqPayload for kuba 
+                var envelope = JsonSerializer.Deserialize<QueueEnvelope<EmbedReqPayload>>(jsonToParse, options);
+                //Deserialize - Json text z fronty do třídy QueueEnvelope
                 if (envelope == null || envelope.Type != QueueMessageType.SimilarityRequest)
                 {
                     _logger.LogWarning("Zpráva ignorována: Není typu SimilarityRequest.");
@@ -60,11 +65,14 @@ namespace rag
                 }
 
                 Guid docId = envelope.Payload.DocumentId;
-                _logger.LogInformation($"Začínám AI analýzu pro dokument s ID: {docId}");
+                _logger.LogInformation($"Začínám AI analýzu pro soubor '{envelope.Payload.FileName}' v projektu '{envelope.Payload.Prefix}'.");
 
                 using var conn = new SqlConnection(_sqlConnection);
                 await conn.OpenAsync();
 
+
+
+                //Idempotence - kdyby napr funkce spadla, mohlo by se pustit znovu a byt duplicity 
                 string sqlClearOld = "DELETE FROM risk_analysis_results WHERE document_id = @docId";
                 using (var cmdClear = new SqlCommand(sqlClearOld, conn))
                 {
@@ -72,7 +80,6 @@ namespace rag
                     await cmdClear.ExecuteNonQueryAsync();
                 }
 
-                // VYNULOVÁNÍ SKÓRE před novou analýzou
                 string sqlResetScore = "UPDATE documents SET total_risk_score = 0 WHERE id = @docId";
                 using (var cmdReset = new SqlCommand(sqlResetScore, conn))
                 {
@@ -80,7 +87,10 @@ namespace rag
                     await cmdReset.ExecuteNonQueryAsync();
                 }
 
-                // Přidáno načtení i risk_weight z databáze, abychom to mohli použít při výpočtu
+
+
+                // nactnei rizik z db 
+                //embedding - 1536 cisel v byte - math vyznam rizika
                 var risks = new List<(Guid RiskId, string RiskCode, string RiskText, int RiskWeight, byte[] RiskEmbedding)>();
                 string sqlGetRisks = "SELECT id, risk_code, text, risk_weight, embedding FROM risk_vectors";
 
@@ -93,7 +103,7 @@ namespace rag
                             reader.GetGuid(0),
                             reader.GetString(1),
                             reader.GetString(2),
-                            reader.GetInt32(3), // Načtení risk_weight
+                            reader.GetInt32(3), 
                             (byte[])reader["embedding"]
                         ));
                     }
@@ -101,10 +111,13 @@ namespace rag
 
                 _logger.LogInformation($"Načetl jsem {risks.Count} rizik k prověření.");
 
+
                 var openAiClient = new AzureOpenAIClient(new Uri(_openAiEndpoint), new System.ClientModel.ApiKeyCredential(_openAiKey));
                 var chatClient = openAiClient.GetChatClient("gpt-4o-mini");
 
                 float calculatedTotalScore = 0.0f;
+
+                //Vector search - sql queries pro kazde riziko a poslani do OpenAI
 
                 foreach (var risk in risks)
                 {
@@ -131,6 +144,7 @@ namespace rag
 
                         using (var reader = await cmdSearch.ExecuteReaderAsync())
                         {
+                            //ulozi podobne odstavce do relevandChunks - kazdy z nich ma ChunkId, text a page num
                             while (await reader.ReadAsync())
                             {
                                 relevantChunks.Add((
@@ -142,6 +156,7 @@ namespace rag
                         }
                     }
                     if (relevantChunks.Count == 0) continue;
+                    //text slepen do combinedChunks
 
                     string combinedChunks = string.Join("\n\n--- DALŠÍ ODSTAVEC ---\n\n",
                         relevantChunks.Select(c => $"[STRANA {c.PageNumber}]:\n{c.Text}"));
@@ -170,6 +185,8 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                         new UserChatMessage("Zde jsou relevantní odstavce:\n\n" + combinedChunks)
                     };
 
+
+                    //mantinely pro AI - structured outputs - striktni json schemata s presnymi vlastnostmi
                     var chatOptions = new ChatCompletionOptions
                     {
                         ResponseFormat = ChatResponseFormat.CreateJsonSchemaFormat(
@@ -190,11 +207,16 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                         )
                     };
 
+
+                    //posle odstavce a pravidla do OpenAI, translate JSON do objektu RIskAnalysisResult
+                    //OpenAI vraci jen json s coverage a explanation - prikazane v jsonSchema a udela z nich RiskAnalysisResult
                     var chatResponse = await chatClient.CompleteChatAsync(messages, chatOptions);
                     var aiResult = JsonSerializer.Deserialize<RiskAnalysisResult>(chatResponse.Value.Content[0].Text, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
+                    //vezne GUIDs odstavců(chunkId) nalezene pres vector search, udela z nich json pole, slouzi videni proc AI rozhodla jak rozhodla
                     string chunkIdsJson = JsonSerializer.Serialize(relevantChunks.Select(c => c.ChunkId));
 
+                    //
                     string sqlInsert = @"
                         INSERT INTO risk_analysis_results 
                         (document_id, risk_id, coverage, explanation, matched_chunk_ids) 
@@ -211,7 +233,9 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                         await cmdInsert.ExecuteNonQueryAsync();
                     }
 
-                    // VÝPOČET SKÓRE PRO TOTO RIZIKO A PŘIČTENÍ DO CELKOVÉHO
+
+
+                    // výpočet skóre
                     float multiplier = 0.0f;
                     if (aiResult.Coverage == "full") multiplier = 1.0f;
                     else if (aiResult.Coverage == "partial") multiplier = 0.5f;
@@ -220,7 +244,7 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                     calculatedTotalScore += riskScore;
                 }
 
-                // DOKONČENÍ ANALÝZY A ULOŽENÍ VÝSLEDNÉHO SKÓRE
+                //finish analýzy a uložení výsledného skóre
                 string sqlUpdateStatusAndScore = "UPDATE documents SET status = 'done', total_risk_score = @score WHERE id = @docId";
                 using (var cmdUpdate = new SqlCommand(sqlUpdateStatusAndScore, conn))
                 {
