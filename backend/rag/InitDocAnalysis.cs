@@ -9,6 +9,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System.Data;
+using rag.shared;
+using static rag.shared.General;
 
 namespace rag;
 
@@ -38,27 +40,29 @@ public class InitDocAnalysis
     }
 
     [Function("InitDocAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "documents/analyze")] HttpRequest req)
     {
         _logger.LogInformation("InitializeDocumentAnalysis called");
 
         string? prefix = req.Query["prefix"];
         if (string.IsNullOrWhiteSpace(prefix))
             return new BadRequestObjectResult("Missing prefix query parameter.");
-        if (!PrefixExistsInDatabase(prefix))
+        if (!await PrefixExistsInDatabaseAsync(_sql, prefix))
             return new BadRequestObjectResult("Invalid prefix.");
 
-        var pdfUrls = await GetPdfUrls(prefix);
-        if (pdfUrls.Count == 0)
+        var blobNames = await GetBlobNames(prefix);
+        if (blobNames.Count == 0)
             return new BadRequestObjectResult("No PDF files uploaded for this prefix.");
 
-        foreach (var url in pdfUrls)
+        foreach (var bN in blobNames)
         {
-            string operationId = await StartDocumentIntelligenceAnalysis(url);
-            SaveDocument(prefix, url, operationId);
+            string operationId = await StartDocumentIntelligenceAnalysis(bN);
+            await SaveDocumentAsync(prefix, bN, operationId);
         }
 
-        SaveOperationToDatabase(prefix);
+        await SaveOperationToDatabaseAsync(prefix);
+
+        await QueueSender.SendToQueueAsync(QueueMessageType.DocAIRequest, new DocAIReqPayload { Prefix = prefix }, delaySec: 100);
 
         return new OkObjectResult(new
         {
@@ -67,26 +71,10 @@ public class InitDocAnalysis
         });
     }
 
-    private bool PrefixExistsInDatabase(string prefix)
+
+    private async Task<List<string>> GetBlobNames(string prefix)
     {
-        using (var conn = new SqlConnection(_sql))
-        {
-            conn.Open();
-
-            using (var cmd = new SqlCommand(
-                "SELECT COUNT(*) FROM analysis WHERE name = @p", conn))
-            {
-                cmd.Parameters.Add("@p", SqlDbType.NVarChar, 255).Value = prefix;
-
-                int count = (int)cmd.ExecuteScalar();
-                return count > 0;
-            }
-        }
-    }
-
-    private async Task<List<string>> GetPdfUrls(string prefix)
-    {
-        var urls = new List<string>();
+        var blobNames = new List<string>();
 
         var blobServiceClient = new BlobServiceClient(_blobConnection);
         string containerName = "pdfs";
@@ -103,25 +91,15 @@ public class InitDocAnalysis
                 blob.Name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
                 blob.Name.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase))
             {
-                urls.Add($"{container.Uri}/{blob.Name}");
+                blobNames.Add(blob.Name);
             }
         }
 
-        return urls;
+        return blobNames;
     }
 
-    private async Task<string> StartDocumentIntelligenceAnalysis(string pdfUrl)
+    private async Task<string> StartDocumentIntelligenceAnalysis(string blobName)
     {
-        // OPRAVA BUGU: Správně extrahujeme celou vnitřní cestu k souboru včetně podsložky (např. "stavba-hala/smlouva.pdf")
-        var uri = new Uri(pdfUrl);
-        string containerPrefix = "/pdfs/";
-        string blobName = Uri.UnescapeDataString(uri.AbsolutePath);
-        int prefixIndex = blobName.IndexOf(containerPrefix, StringComparison.OrdinalIgnoreCase);
-        if (prefixIndex >= 0)
-        {
-            blobName = blobName.Substring(prefixIndex + containerPrefix.Length);
-        }
-
         var blobServiceClient = new BlobServiceClient(_blobConnection);
         var containerClient = blobServiceClient.GetBlobContainerClient("pdfs");
         var blobClient = containerClient.GetBlobClient(blobName);
@@ -147,42 +125,40 @@ public class InitDocAnalysis
         }
     }
 
-    private void SaveOperationToDatabase(string prefix)
+    private async Task SaveOperationToDatabaseAsync(string prefix)
     {
         using (var conn = new SqlConnection(_sql))
         {
-            conn.Open();
+            await conn.OpenAsync();
 
-            using (var cmd = new SqlCommand(
-                "UPDATE analysis SET status = 'processing' WHERE name = @p", conn))
+            using (var cmd = new SqlCommand("UPDATE analysis SET status = 'processing' WHERE name = @p", conn))
             {
                 cmd.Parameters.AddWithValue("@p", prefix);
 
-                cmd.ExecuteNonQuery();
+                await cmd.ExecuteNonQueryAsync();
             }
         }
     }
 
-    private void SaveDocument(string prefix, string url, string operationId)
+    private async Task SaveDocumentAsync(string prefix, string blobName, string operationId)
     {
-        string fileName = Path.GetFileName(new Uri(url).AbsolutePath);
-
         using var conn = new SqlConnection(_sql);
-        conn.Open();
+
+        await conn.OpenAsync();
 
         using var cmd = new SqlCommand(@"
-            INSERT INTO documents (analysis_id, file_name, pdf_url, operation_id, status)
-            SELECT id, @fileName, @url, @operationId, 'processing'
+            INSERT INTO documents (analysis_id, file_name, operation_id, status)
+            SELECT id, @fileName, @operationId, 'processing'
             FROM analysis
             WHERE name = @prefix;
         ", conn);
 
         cmd.Parameters.AddWithValue("@prefix", prefix);
-        cmd.Parameters.AddWithValue("@fileName", fileName);
-        cmd.Parameters.AddWithValue("@url", url);
+        cmd.Parameters.AddWithValue("@fileName", blobName);
         cmd.Parameters.AddWithValue("@operationId", operationId);
 
-        int rows = cmd.ExecuteNonQuery();
+        int rows = await cmd.ExecuteNonQueryAsync();
+
         if (rows == 0)
             throw new Exception($"Analysis '{prefix}' not found.");
     }

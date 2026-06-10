@@ -1,4 +1,4 @@
-﻿using Azure.AI.OpenAI; // Tady už to správně máš
+﻿using Azure.AI.OpenAI;
 using Azure.Storage.Blobs;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
@@ -17,6 +17,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using static rag.shared.General;
 
 public class EmbeddingService
 {
@@ -24,7 +25,6 @@ public class EmbeddingService
 
     public EmbeddingService(string endpoint, string apiKey, string model)
     {
-        // OPRAVENO: Používáme AzureOpenAIClient místo obyčejného OpenAIClient
         AzureOpenAIClient client = new(new Uri(endpoint), new ApiKeyCredential(apiKey));
 
         EmbeddingClient embeddingClient = client.GetEmbeddingClient(model);
@@ -33,7 +33,6 @@ public class EmbeddingService
 
     public async Task<OpenAIEmbeddingCollection> CreateEmbeddingAsync(string[] sArr)
     {
-        // OPRAVA TADY: Vynutíme maximální velikost 1536, abychom nenarazili do limitu Azure SQL!
         var options = new EmbeddingGenerationOptions { Dimensions = 1536 };
         var response = await _embeddingsClient.GenerateEmbeddingsAsync(sArr, options);
         return response.Value;
@@ -42,15 +41,16 @@ public class EmbeddingService
 
 public record ChunkInfo(int PageNumber, int ChunkIndex, string Text);
 
-public class ProcessEmbeddings
+public class CreateEmbeddings
 {
     private readonly ILogger _logger;
     private readonly EmbeddingService _embeddingService;
     private readonly string _sqlConnectionString;
+    private readonly string _blobConnection;
 
-    public ProcessEmbeddings(ILoggerFactory loggerFactory)
+    public CreateEmbeddings(ILoggerFactory loggerFactory)
     {
-        _logger = loggerFactory.CreateLogger<ProcessEmbeddings>();
+        _logger = loggerFactory.CreateLogger<CreateEmbeddings>();
         var endpoint = Environment.GetEnvironmentVariable("OpenAI__Endpoint")
             ?? throw new InvalidOperationException("Missing environment variable: OpenAI__Endpoint");
         var key = Environment.GetEnvironmentVariable("OpenAI__ApiKey")
@@ -59,68 +59,58 @@ public class ProcessEmbeddings
             ?? throw new InvalidOperationException("Missing environment variable: EmbeddingModel");
         _sqlConnectionString = Environment.GetEnvironmentVariable("SqlConnection")
             ?? throw new InvalidOperationException("Missing environment variable: SqlConnection");
+        _blobConnection = Environment.GetEnvironmentVariable("BlobConnection")
+            ?? throw new InvalidOperationException("BlobConnection env variable is missing.");
 
         _embeddingService = new EmbeddingService(endpoint, key, model);
 
         _logger.LogInformation("Endpoint: {e}, Model: {m}", endpoint, model);
     }
 
-    [Function("ProcessEmbeddings")]
-    public async Task Run([QueueTrigger("pdf-embedding-queue", Connection = "MyDataStorage")] string message)
+    [Function("CreateEmbeddings")]
+    public async Task Run([QueueTrigger("pdf-embedding-queue", Connection = "MyDataStorage")] QueueEnvelope<EmbedReqPayload> message)
     {
-        _logger.LogInformation("Received queue message");
+        _logger.LogInformation("CreateEmbeddings called");
 
-        var envelope = QueueMessageHelper.Deserialize<QueueEnvelope<EmbedReqPayload>>(message);
-
-        if (envelope == null)
+        var payload = message.Payload;
+        var prefix = payload.Prefix;
+        if (string.IsNullOrWhiteSpace(prefix))
         {
-            _logger.LogError("Failed to deserialize envelope");
+            _logger.LogWarning("Queue returned a prefix that is null. Ignoring.");
             return;
         }
-        if (envelope.Type != QueueMessageType.EmbeddingRequest)
+        if (!await PrefixExistsInDatabaseAsync(_sqlConnectionString, prefix))
         {
-            _logger.LogWarning("Ignoring message of type {Type}", envelope.Type);
+            _logger.LogError($"Queue returned an invalid prefix {prefix} that doesn't exist in DB. Ignoring.");
             return;
         }
 
-        var payload = envelope.Payload;
-
-     
-
-        // ---------------------------------------------------------
-        // CLOUD CLAIM CHECK: Vyzvednutí výsledků z Azure Blob Storage
-        // ---------------------------------------------------------
-        string connectionString = Environment.GetEnvironmentVariable("MyDataStorage");
-        BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
+        BlobServiceClient blobServiceClient = new BlobServiceClient(_blobConnection);
         BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient("ocr-results");
-
-        string blobName = $"{payload.Prefix}/{payload.FileName}.json";
+        string blobName = $"{payload.FileName}.json";
         BlobClient blobClient = containerClient.GetBlobClient(blobName);
 
         if (!await blobClient.ExistsAsync())
         {
-            _logger.LogError($"JSON data chybí v Blobu! Hledáno: {blobName}");
+            _logger.LogError($"JSON does not exist in Blob Storage, Blob name: {blobName}");
             return;
         }
 
-        _logger.LogInformation($"Čtu JSON z Blobu: {blobName}");
+        _logger.LogInformation($"Getting Blob: {blobName}");
         var response = await blobClient.DownloadContentAsync();
         string jsonContent = response.Value.Content.ToString();
-
         using var jsonDoc = JsonDocument.Parse(jsonContent);
         var analyzeResult = jsonDoc.RootElement.GetProperty("analyzeResult");
-        // ---------------------------------------------------------
 
         var chunks = ChunkByPages(analyzeResult, 800); // 800 chars per chunk
-        _logger.LogInformation("Chunked into {Count} chunks", chunks.Count);
+        _logger.LogInformation($"Chunked into {chunks.Count} chunks");
 
         var textChunks = chunks.Select(c => c.Text).ToArray();
 
         var embeddingCollection = await _embeddingService.CreateEmbeddingAsync(textChunks);
         var items = embeddingCollection.ToList();
 
-        // Promazání starých kousků před vložením nových (prevence duplicit)
-        await ClearOldChunksAsync(payload.DocumentId);
+        await ClearOldChunksAsync(payload.DocumentId); //duplicity prevention in case of overwriting existing doc
 
         for (int i = 0; i < chunks.Count; i++)
         {
@@ -134,10 +124,9 @@ public class ProcessEmbeddings
                 vFloats
             );
 
-            _logger.LogInformation("Chunk saved. Text length: {len}", chunks[i].Text.Length);
         }
+        _logger.LogInformation($"Chunks with embeddings saved to DB for document: {payload.FileName}");
 
-        // Předání štafety dál pro tvou AI (Pás 2)
         await QueueSender.SendToQueueAsync(QueueMessageType.SimilarityRequest, new SimilarityReqPayload
         {
             DocumentId = payload.DocumentId,
@@ -226,10 +215,9 @@ public class ProcessEmbeddings
         cmd.Parameters.AddWithValue("@chunk_index", chunkIndex);
         cmd.Parameters.AddWithValue("@text", text);
 
-        // OPRAVA: I odstavce smlouvy uložíme jako JSON text převedený na UTF-8 bajty
-        string jsonEmbedding = JsonSerializer.Serialize(embedding);
-        byte[] jsonBytes = Encoding.UTF8.GetBytes(jsonEmbedding);
-        cmd.Parameters.AddWithValue("@embedding", jsonBytes);
+        byte[] rawBytes = new byte[embedding.Length * sizeof(float)];
+        Buffer.BlockCopy(embedding, 0, rawBytes, 0, rawBytes.Length);
+        cmd.Parameters.AddWithValue("@embedding", rawBytes);
 
         await cmd.ExecuteNonQueryAsync();
     }
