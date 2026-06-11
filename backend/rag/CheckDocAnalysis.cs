@@ -94,16 +94,43 @@ public class CheckDocAnalysis
     }
 
     [Function("CheckDocAnalysis")]
-    public async Task Run([QueueTrigger("pdf-json-queue")] QueueEnvelope<DocAIReqPayload> message)
+    //přidal jsem , Connection = "MyDataStorage" kvůli chybě
+    //zmeny kvuli erroru
+    public async Task Run([QueueTrigger("pdf-json-queue", Connection = "MyDataStorage")] string queueMessage)
     {
         _logger.LogInformation("CheckDocumentAnalysis called");
 
-        string prefix = message.Payload.Prefix;
-        if (string.IsNullOrWhiteSpace(prefix))
+        // 1. Dekódování z Base64 na čistý JSON
+        string jsonToParse = queueMessage;
+        if (!queueMessage.Trim().StartsWith("{"))
+        {
+            jsonToParse = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
+        }
+
+        // 2. Deserializace z JSONu do objektu
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        var message = JsonSerializer.Deserialize<QueueEnvelope<DocAIReqPayload>>(jsonToParse, options);
+
+        if (message == null || string.IsNullOrWhiteSpace(message.Payload.Prefix))
         {
             _logger.LogWarning("Queue returned a prefix that is null. Ignoring.");
             return;
         }
+
+
+
+
+
+
+        string prefix = message.Payload.Prefix;
+        //if (string.IsNullOrWhiteSpace(prefix))
+        //{
+        //    _logger.LogWarning("Queue returned a prefix that is null. Ignoring.");
+        //    return;
+        //}
+
+
+
         if (!await PrefixExistsInDatabaseAsync(_sql, prefix))
         {
             _logger.LogError($"Queue returned an invalid prefix {prefix} that doesn't exist in DB. Ignoring.");

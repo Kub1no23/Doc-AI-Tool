@@ -218,9 +218,15 @@ public class CreateEmbeddings
         cmd.Parameters.AddWithValue("@chunk_index", chunkIndex);
         cmd.Parameters.AddWithValue("@text", text);
 
-        byte[] rawBytes = new byte[embedding.Length * sizeof(float)];
-        Buffer.BlockCopy(embedding, 0, rawBytes, 0, rawBytes.Length);
-        cmd.Parameters.AddWithValue("@embedding", rawBytes);
+        //smazano kvuli erroru pri testu - nesoulad mezi ukladanim vygenerovanych vektoru do sql v SeedRisks( na Json) a tady - raw bytes
+        //byte[] rawBytes = new byte[embedding.Length * sizeof(float)];
+        //Buffer.BlockCopy(embedding, 0, rawBytes, 0, rawBytes.Length);
+        //cmd.Parameters.AddWithValue("@embedding", rawBytes);
+
+        //nahrada
+        string jsonEmbedding = JsonSerializer.Serialize(embedding);
+        byte[] jsonBytes = Encoding.UTF8.GetBytes(jsonEmbedding);
+        cmd.Parameters.AddWithValue("@embedding", jsonBytes);
 
         await cmd.ExecuteNonQueryAsync();
     }
