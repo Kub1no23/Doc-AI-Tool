@@ -19,16 +19,10 @@ namespace rag
             _logger = logger;
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
         }
-
+        //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
         [Function("GetComparison")]
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get")] HttpRequest req)
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", Route = "analyses/{prefix}/comparison")] HttpRequest req, string prefix)
         {
-            string? prefix = req.Query["prefix"];
-            if (string.IsNullOrWhiteSpace(prefix))
-            {
-                return new BadRequestObjectResult(new { error = "Chybí parametr 'prefix' (název projektu)." });
-            }
-
             var rankedDocuments = new List<object>();
 
             using var conn = new SqlConnection(_sqlConnection);

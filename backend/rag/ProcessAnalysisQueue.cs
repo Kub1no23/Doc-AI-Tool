@@ -40,7 +40,7 @@ namespace rag
 
         //po ziskani zpravy z ai-analysis-queue s docID, se zprava preda do queueMessage
         [Function(nameof(ProcessAnalysisQueue))]
-        public async Task Run([QueueTrigger("ai-analysis-queue", Connection = "MyDataStorage")] string queueMessage)
+        public async Task Run([QueueTrigger("llm-overview-queue", Connection = "MyDataStorage")] string queueMessage)
         {
             //QueueTrigger - Pristane zprava ve fronte ai-analysis-queue - spust tohle a obas dej do varuable queueMessage
             try
@@ -252,6 +252,41 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                     cmdUpdate.Parameters.AddWithValue("@score", calculatedTotalScore);
                     await cmdUpdate.ExecuteNonQueryAsync();
                 }
+
+
+                //fan in - kontrola dokonceni projektu
+                string sqlGetAnalysisId = "SELECT analysis_id FROM documents WHERE id = @docId";
+                Guid analysisId;
+                using (var cmdGetId = new SqlCommand(sqlGetAnalysisId, conn))
+                {
+                    cmdGetId.Parameters.AddWithValue("@docId", docId);
+                    analysisId = (Guid)await cmdGetId.ExecuteScalarAsync();
+                }
+
+                // 2. Zeptáme se databáze, kolik dokumentů v tomto projektu ještě pracuje
+                string sqlCheckPending = "SELECT COUNT(*) FROM documents WHERE analysis_id = @analysisId AND status NOT IN ('done', 'error')";
+                int pendingCount;
+                using (var cmdCheck = new SqlCommand(sqlCheckPending, conn))
+                {
+                    cmdCheck.Parameters.AddWithValue("@analysisId", analysisId);
+                    pendingCount = (int)await cmdCheck.ExecuteScalarAsync();
+                }
+
+                // 3. Pokud jsme poslední, project done v tabulce analysis
+                if (pendingCount == 0)
+                {
+                    _logger.LogInformation($"Všechny dokumenty v projektu {analysisId} jsou hotovy! Uzavírám analýzu.");
+                    string sqlCloseAnalysis = "UPDATE analysis SET status = 'done' WHERE id = @analysisId";
+                    using (var cmdClose = new SqlCommand(sqlCloseAnalysis, conn))
+                    {
+                        cmdClose.Parameters.AddWithValue("@analysisId", analysisId);
+                        await cmdClose.ExecuteNonQueryAsync();
+                    }
+                }
+
+
+
+
 
                 _logger.LogInformation($"Hotovo! Rizika pro dokument {docId} byla vyhodnocena. Celkové skóre: {calculatedTotalScore}");
             }

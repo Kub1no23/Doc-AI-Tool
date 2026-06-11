@@ -30,11 +30,11 @@ namespace rag.shared
         public string Prefix { get; set; }
         public string FileName { get; set; }
     }
-
-    public class SimilarityReqPayload
-    {
-        public Guid DocumentId { get; set; }
-    }
+    //nepouziva se
+    //public class SimilarityReqPayload
+    //{
+    //    public Guid DocumentId { get; set; }
+    //}
 
 
     internal class QueueMessageHelper
@@ -53,7 +53,7 @@ namespace rag.shared
             {
                 QueueMessageType.DocAIRequest => "pdf-json-queue",
                 QueueMessageType.EmbeddingRequest => "pdf-embedding-queue",
-                QueueMessageType.SimilarityRequest => "ai-analysis-queue",
+                QueueMessageType.SimilarityRequest => "llm-overview-queue",
                 _ => "ragqueue-default"
             };
 

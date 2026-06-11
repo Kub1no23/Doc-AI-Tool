@@ -21,15 +21,10 @@ namespace rag
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
         }
 
+        //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
         [Function("GetDocumentDetails")]
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get")] HttpRequest req)
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", Route = "documents/{documentId:guid}/risks")] HttpRequest req, Guid documentId)
         {
-            string? documentIdStr = req.Query["documentId"];
-            if (!Guid.TryParse(documentIdStr, out Guid documentId))
-            {
-                return new BadRequestObjectResult(new { error = "Chybí nebo je neplatný parametr 'documentId'." });
-            }
-
             var results = new List<object>();
 
             using var conn = new SqlConnection(_sqlConnection);

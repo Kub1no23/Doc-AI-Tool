@@ -127,9 +127,12 @@ public class CreateEmbeddings
         }
         _logger.LogInformation($"Chunks with embeddings saved to DB for document: {payload.FileName}");
 
-        await QueueSender.SendToQueueAsync(QueueMessageType.SimilarityRequest, new SimilarityReqPayload
+        //zmenil jsem SimilarityReqPayload na EmbedReqPayload s vice parametry
+        await QueueSender.SendToQueueAsync(QueueMessageType.SimilarityRequest, new EmbedReqPayload /*SimilarityReqPayload*/
         {
             DocumentId = payload.DocumentId,
+            Prefix = payload.Prefix,
+            FileName = payload.FileName
         });
     }
 
