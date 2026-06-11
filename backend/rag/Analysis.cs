@@ -21,7 +21,9 @@ public class Analysis
     }
 
     [Function("CreateAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "analysis")] HttpRequest req)
+    //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "analysis")] HttpRequest req)
     {
         string? analysisName = req.Query["name"];
         if (string.IsNullOrWhiteSpace(analysisName))
@@ -78,7 +80,9 @@ public class Analysis
     }
 
     [Function("GetAllAnalysis")]
-    public async Task<IActionResult> GetAll([HttpTrigger(AuthorizationLevel.Function, "get", Route = "analysis")] HttpRequest req)
+    //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+
+    public async Task<IActionResult> GetAll([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "analysis")] HttpRequest req)
     {
         _logger.LogInformation("Fetching all analysis records.");
 
@@ -130,7 +134,9 @@ public class Analysis
     }
 
     [Function("DeleteAnalysis")]
-    public async Task<IActionResult> Delete([HttpTrigger(AuthorizationLevel.Function, "delete", Route = "analysis/{id}")] HttpRequest req, string id)
+    //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+
+    public async Task<IActionResult> Delete([HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "analysis/{id}")] HttpRequest req, string id)
     {
         if (!Guid.TryParse(id, out Guid analysisId))
             return new BadRequestObjectResult("Invalid analysis ID.");

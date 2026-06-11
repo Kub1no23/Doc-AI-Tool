@@ -40,7 +40,8 @@ public class InitDocAnalysis
     }
 
     [Function("InitDocAnalysis")]
-    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "documents/analyze")] HttpRequest req)
+    //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "documents/analyze")] HttpRequest req)
     {
         _logger.LogInformation("InitializeDocumentAnalysis called");
 

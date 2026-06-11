@@ -23,7 +23,9 @@ namespace rag
 
         //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
         [Function("GetDocumentDetails")]
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", Route = "documents/{documentId:guid}/risks")] HttpRequest req, Guid documentId)
+        //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "documents/{documentId:guid}/risks")] HttpRequest req, Guid documentId)
         {
             var results = new List<object>();
 

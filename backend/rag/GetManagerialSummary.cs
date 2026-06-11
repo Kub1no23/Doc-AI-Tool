@@ -30,7 +30,8 @@ namespace rag
 
         //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
         [Function("GetManagerialSummary")]
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", Route = "analyses/{prefix}/summary")] HttpRequest req, string prefix)
+        //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "analyses/{prefix}/summary")] HttpRequest req, string prefix)
         {
 
             using var conn = new SqlConnection(_sqlConnection);
