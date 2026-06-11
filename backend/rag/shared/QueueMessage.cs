@@ -54,7 +54,7 @@ namespace rag.shared
                 QueueMessageType.DocAIRequest => "pdf-json-queue",
                 QueueMessageType.EmbeddingRequest => "pdf-embedding-queue",
                 QueueMessageType.SimilarityRequest => "llm-overview-queue",
-                _ => "ragqueue-default"
+                _ => throw new ArgumentOutOfRangeException("Neznámý typ fronty! Zapomněl jsi ho přidat do mapování.")
             };
 
             var queueClient = new QueueClient(Environment.GetEnvironmentVariable("MyDataStorage"), queueName);
