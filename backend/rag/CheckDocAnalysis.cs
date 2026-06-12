@@ -119,16 +119,8 @@ public class CheckDocAnalysis
 
 
 
-
-
-
         string prefix = message.Payload.Prefix;
-        //if (string.IsNullOrWhiteSpace(prefix))
-        //{
-        //    _logger.LogWarning("Queue returned a prefix that is null. Ignoring.");
-        //    return;
-        //}
-
+   
 
 
         if (!await PrefixExistsInDatabaseAsync(_sql, prefix))
