@@ -42,7 +42,7 @@ namespace rag
 
         //po ziskani zpravy z ai-analysis-queue s docID, se zprava preda do queueMessage
         [Function(nameof(Comparison))]
-        public async Task Run([QueueTrigger("llm-overview-queue", Connection = "MyDataStorage")] QueueEnvelope<EmbedReqPayload> message)
+        public async Task ProcessQueueAsync([QueueTrigger("llm-overview-queue", Connection = "MyDataStorage")] QueueEnvelope<EmbedReqPayload> message)
         {
             //QueueTrigger - Pristane zprava ve fronte ai-analysis-queue - spust tohle a obas dej do varuable queueMessage
             try
@@ -201,11 +201,18 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                     //vezne GUIDs odstavců(chunkId) nalezene pres vector search, udela z nich json pole, slouzi videni proc AI rozhodla jak rozhodla
                     string chunkIdsJson = JsonSerializer.Serialize(relevantChunks.Select(c => c.ChunkId));
 
-                    //
+                    // Vytáhneme unikátní čísla stránek z nalezených chunků.
+                    // Pokud AI řekne 'none' (riziko není), uložíme prázdné pole [].
+                    string pagesJson = aiResult.Coverage == "none"
+                        ? "[]"
+                        : JsonSerializer.Serialize(relevantChunks.Select(c => c.PageNumber).Distinct());
+
+
+
                     string sqlInsert = @"
-                        INSERT INTO risk_analysis_results 
-                        (document_id, risk_id, coverage, explanation, matched_chunk_ids) 
-                        VALUES (@docId, @riskId, @coverage, @explanation, @matchedChunkIds)";
+    INSERT INTO risk_analysis_results 
+    (document_id, risk_id, coverage, explanation, matched_chunk_ids, matched_pages) 
+    VALUES (@docId, @riskId, @coverage, @explanation, @matchedChunkIds, @matchedPages)";
 
                     using (var cmdInsert = new SqlCommand(sqlInsert, conn))
                     {
@@ -214,6 +221,7 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                         cmdInsert.Parameters.AddWithValue("@coverage", aiResult.Coverage);
                         cmdInsert.Parameters.AddWithValue("@explanation", aiResult.Explanation);
                         cmdInsert.Parameters.AddWithValue("@matchedChunkIds", chunkIdsJson);
+                        cmdInsert.Parameters.AddWithValue("@matchedPages", pagesJson); // NOVÝ PARAMETR
 
                         await cmdInsert.ExecuteNonQueryAsync();
                     }
@@ -318,7 +326,7 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
 
         //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
 
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "analysis/results")] HttpRequest req)
+        public async Task<IActionResult> GetResultsAsync([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "analysis/results")] HttpRequest req)
         {
             // 1. Vytažení parametru za otazníkem z URL
             string? prefix = req.Query["prefix"];

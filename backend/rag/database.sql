@@ -1,4 +1,4 @@
-CREATE TABLE analysis (
+﻿CREATE TABLE analysis (
     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
     name NVARCHAR(255) NOT NULL UNIQUE,
     status NVARCHAR(50) NOT NULL 
@@ -53,5 +53,7 @@ CREATE TABLE risk_analysis_results (
     coverage NVARCHAR(50) NOT NULL CHECK (coverage IN ('full', 'partial', 'none')),
     explanation NVARCHAR(MAX) NOT NULL,
     matched_chunk_ids NVARCHAR(MAX) NOT NULL, -- JSON array of GUIDs
+    matched_pages NVARCHAR(255) NULL,         -- <-- (JSON pole stránek)
     created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+
 );

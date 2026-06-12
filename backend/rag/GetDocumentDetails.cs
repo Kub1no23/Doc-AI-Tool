@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace rag
 {
@@ -23,8 +24,6 @@ namespace rag
 
         //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
         [Function("GetDocumentDetails")]
-        //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
-
         public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "documents/{documentId:guid}/results")] HttpRequest req, Guid documentId)
         {
             var results = new List<object>();
@@ -32,24 +31,24 @@ namespace rag
             using var conn = new SqlConnection(_sqlConnection);
             await conn.OpenAsync();
 
-            // Vytáhneme výsledky analýzy a spojíme je s definicí rizik.
-            // Seřadíme je tak, aby 'full' rizika byla nahoře, pak 'partial' a nakonec 'none'.
+            // Přidali jsme ISNULL(rar.matched_pages, '[]') jako 5. sloupec
             string sql = @"
-                SELECT 
-                    rv.risk_code, 
-                    rv.text, 
-                    ISNULL(rar.coverage, 'none') AS coverage, 
-                    ISNULL(rar.explanation, 'AI systém toto riziko nenašel, nebo k němu nevygeneroval popis.') AS explanation
-                FROM risk_vectors rv
-                LEFT JOIN risk_analysis_results rar 
-                    ON rv.id = rar.risk_id AND rar.document_id = @docId
-                ORDER BY 
-                    CASE ISNULL(rar.coverage, 'none')
-                        WHEN 'full' THEN 1 
-                        WHEN 'partial' THEN 2 
-                        WHEN 'none' THEN 3 
-                        ELSE 4 
-                    END ASC";
+        SELECT 
+            rv.risk_code, 
+            rv.text, 
+            ISNULL(rar.coverage, 'none') AS coverage, 
+            ISNULL(rar.explanation, 'AI systém toto riziko nenašel, nebo k němu nevygeneroval popis.') AS explanation,
+            ISNULL(rar.matched_pages, '[]') AS matched_pages
+        FROM risk_vectors rv
+        LEFT JOIN risk_analysis_results rar 
+            ON rv.id = rar.risk_id AND rar.document_id = @docId
+        ORDER BY 
+            CASE ISNULL(rar.coverage, 'none')
+                WHEN 'full' THEN 1 
+                WHEN 'partial' THEN 2 
+                WHEN 'none' THEN 3 
+                ELSE 4 
+            END ASC";
 
             using var cmd = new SqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("@docId", documentId);
@@ -57,34 +56,22 @@ namespace rag
             using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                // 1. Uložíme si původní hrubou odpověď od AI do proměnné
                 string rawExplanation = reader.GetString(3);
+                string matchedPagesJson = reader.GetString(4); // Nový sloupec s JSON polem stránek
 
-                // Připravíme si prázdný seznam pro případ, že AI vrátí více odkazů na stránky
-                var pageNumbers = new List<int>();
+                // Odstraníme zbytky [[page:X]] tagů, kdyby je tam AI náhodou přece jen dalo (pro jistotu)
+                string cleanExplanation = System.Text.RegularExpressions.Regex.Replace(rawExplanation, @"\[\[page:\s*\d+\s*\]\]", "").Trim();
 
-                // 2. Extrakce všech výskytů tagů stránek (např. [[page:5]])
-                var matches = Regex.Matches(rawExplanation, @"\[\[page:\s*(\d+)\s*\]\]");
-                foreach (Match match in matches)
-                {
-                    // Převedeme vytažený text na číslo a přidáme do pole (pokud tam ještě není)
-                    if (int.TryParse(match.Groups[1].Value, out int page) && !pageNumbers.Contains(page))
-                    {
-                        pageNumbers.Add(page);
-                    }
-                }
+                // Jednoduše deserializujeme naše uložené pole čísel
+                List<int> pageNumbers = JsonSerializer.Deserialize<List<int>>(matchedPagesJson) ?? new List<int>();
 
-                // 3. Odstranění tagů z původního textu a oříznutí zbytečných mezer na koncích
-                string cleanExplanation = Regex.Replace(rawExplanation, @"\[\[page:\s*\d+\s*\]\]", "").Trim();
-
-                // 4. Přidání do finálního výsledku pro frontend
                 results.Add(new
                 {
                     riskCode = reader.GetString(0),
                     riskName = reader.GetString(1),
                     coverage = reader.GetString(2),
-                    explanation = cleanExplanation, // Očištěný text
-                    pages = pageNumbers             // Samostatné pole intů (např. [5, 7] nebo [])
+                    explanation = cleanExplanation,
+                    pages = pageNumbers // Bude vždy obsahovat přesná čísla (např. [5, 12])
                 });
             }
 
