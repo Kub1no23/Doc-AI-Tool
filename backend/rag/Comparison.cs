@@ -260,13 +260,21 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                 // 3. Pokud jsme poslední, project done v tabulce analysis
                 if (pendingCount == 0)
                 {
-                    _logger.LogInformation($"Všechny dokumenty v projektu {analysisId} jsou hotovy! Uzavírám analýzu.");
-                    string sqlCloseAnalysis = "UPDATE analysis SET status = 'done' WHERE id = @analysisId";
-                    using (var cmdClose = new SqlCommand(sqlCloseAnalysis, conn))
+
+                    _logger.LogInformation($"Všechny dokumenty v projektu {analysisId} jsou hotovy! Odesílám požadavek na vytvoření manažerského shrnutí.");
+                    //string sqlCloseAnalysis = "UPDATE analysis SET status = 'done' WHERE id = @analysisId";
+                    //using (var cmdClose = new SqlCommand(sqlCloseAnalysis, conn))
+                    //{
+                    //    cmdClose.Parameters.AddWithValue("@analysisId", analysisId);
+                    //    await cmdClose.ExecuteNonQueryAsync();
+                    //}
+
+                    // Zde už analýzu nenastavujeme na 'done', to udělá až CreateSummary
+                    await QueueSender.SendToQueueAsync(QueueMessageType.SummaryRequest, new SummaryReqPayload
                     {
-                        cmdClose.Parameters.AddWithValue("@analysisId", analysisId);
-                        await cmdClose.ExecuteNonQueryAsync();
-                    }
+                        AnalysisId = analysisId,
+                        Prefix = message.Payload.Prefix
+                    });
                 }
 
 
@@ -282,6 +290,26 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
                 _logger.LogError($"Chyba při vyhodnocování rizik dokumentu: {ex.Message}");
             }
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

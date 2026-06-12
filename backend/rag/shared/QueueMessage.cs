@@ -11,6 +11,7 @@ namespace rag.shared
         DocAIRequest = 1,
         EmbeddingRequest = 2,
         SimilarityRequest = 3,
+        SummaryRequest = 4 // <--- NOVÉ
     }
 
     public class QueueEnvelope<T>
@@ -30,12 +31,13 @@ namespace rag.shared
         public string Prefix { get; set; }
         public string FileName { get; set; }
     }
-    //nepouziva se
-    //public class SimilarityReqPayload
-    //{
-    //    public Guid DocumentId { get; set; }
-    //}
 
+    //new
+    public class SummaryReqPayload
+    {
+        public Guid AnalysisId { get; set; }
+        public string Prefix { get; set; }
+    }
 
     internal class QueueMessageHelper
     {
@@ -54,6 +56,7 @@ namespace rag.shared
                 QueueMessageType.DocAIRequest => "pdf-json-queue",
                 QueueMessageType.EmbeddingRequest => "pdf-embedding-queue",
                 QueueMessageType.SimilarityRequest => "llm-overview-queue",
+                QueueMessageType.SummaryRequest => "summary-queue", // <--- NOVÉ
                 _ => throw new ArgumentOutOfRangeException("Neznámý typ fronty! Zapomněl jsi ho přidat do mapování.")
             };
 
