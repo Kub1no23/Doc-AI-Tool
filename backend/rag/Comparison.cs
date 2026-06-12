@@ -1,5 +1,7 @@
 ﻿using Azure;
 using Azure.AI.OpenAI;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -22,14 +24,14 @@ namespace rag
         public string Explanation { get; set; }
     }
 
-    public class ProcessAnalysisQueue
+    public class Comparison
     {
-        private readonly ILogger<ProcessAnalysisQueue> _logger;
+        private readonly ILogger<Comparison> _logger;
         private readonly string _sqlConnection;
         private readonly string _openAiEndpoint;
         private readonly string _openAiKey;
 
-        public ProcessAnalysisQueue(ILogger<ProcessAnalysisQueue> logger)
+        public Comparison(ILogger<Comparison> logger)
         {
             _logger = logger;
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
@@ -39,33 +41,16 @@ namespace rag
 
 
         //po ziskani zpravy z ai-analysis-queue s docID, se zprava preda do queueMessage
-        [Function(nameof(ProcessAnalysisQueue))]
-        public async Task Run([QueueTrigger("llm-overview-queue", Connection = "MyDataStorage")] string queueMessage)
+        [Function(nameof(Comparison))]
+        public async Task Run([QueueTrigger("llm-overview-queue", Connection = "MyDataStorage")] QueueEnvelope<EmbedReqPayload> message)
         {
             //QueueTrigger - Pristane zprava ve fronte ai-analysis-queue - spust tohle a obas dej do varuable queueMessage
             try
             {
-                var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-                string jsonToParse = queueMessage;
+     
 
-                // Kontrola Base64 - pokud to nezacina zavorkou - je to Base64(zpravy ve frontach se historicky posilali a je to dost hnusne akodovane) -> musime dekodovat na json
-                if (!queueMessage.Trim().StartsWith("{"))
-                {
-                    jsonToParse = Encoding.UTF8.GetString(Convert.FromBase64String(queueMessage));
-                }
-
-
-                //changed SimilarityReqPayload for EmbedReqPayload for kuba 
-                var envelope = JsonSerializer.Deserialize<QueueEnvelope<EmbedReqPayload>>(jsonToParse, options);
-                //Deserialize - Json text z fronty do třídy QueueEnvelope
-                if (envelope == null || envelope.Type != QueueMessageType.SimilarityRequest)
-                {
-                    _logger.LogWarning("Zpráva ignorována: Není typu SimilarityRequest.");
-                    return;
-                }
-
-                Guid docId = envelope.Payload.DocumentId;
-                _logger.LogInformation($"Začínám AI analýzu pro soubor '{envelope.Payload.FileName}' v projektu '{envelope.Payload.Prefix}'.");
+                Guid docId = message.Payload.DocumentId;
+                _logger.LogInformation($"Začínám AI analýzu pro soubor '{message.Payload.FileName}' v projektu '{message.Payload.Prefix}'.");
 
                 using var conn = new SqlConnection(_sqlConnection);
                 await conn.OpenAsync();
@@ -286,6 +271,8 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
 
 
 
+                //? novy queue a pak cela analysis done 
+
 
 
                 _logger.LogInformation($"Hotovo! Rizika pro dokument {docId} byla vyhodnocena. Celkové skóre: {calculatedTotalScore}");
@@ -294,6 +281,82 @@ Pokud je coverage 'none', stručně vysvětli proč (např. text o tom nemluví 
             {
                 _logger.LogError($"Chyba při vyhodnocování rizik dokumentu: {ex.Message}");
             }
+        }
+
+
+
+        //zmenil jsem route a odebral kod ktery checkoval ID, ted to dela azure sam
+        [Function("GetComparison")]
+
+        //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
+
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "analysis/results")] HttpRequest req)
+        {
+            // 1. Vytažení parametru za otazníkem z URL
+            string? prefix = req.Query["prefix"];
+
+            // 2. Kontrola, jestli ho frontend opravdu poslal
+            if (string.IsNullOrWhiteSpace(prefix))
+            {
+                return new BadRequestObjectResult("Chybí parametr 'prefix' v URL (např. ?prefix=muj_projekt).");
+            }
+
+
+            var rankedDocuments = new List<object>();
+
+            using var conn = new SqlConnection(_sqlConnection);
+            await conn.OpenAsync();
+
+            // Vybereme všechny dokumenty pro daný projekt a seřadíme je podle skóre
+
+            // Přidáno a.final_synthesis_markdown jako 5. sloupec (index 4)
+            string sql = @"
+    SELECT d.id, d.file_name, d.status, d.total_risk_score, a.final_synthesis_markdown 
+    FROM documents d
+    JOIN analysis a ON d.analysis_id = a.id
+    WHERE a.name = @prefix
+    ORDER BY d.total_risk_score ASC";
+
+            using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@prefix", prefix);
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            int rank = 1;
+
+            // Proměnná pro uložení markdownu (na začátku je null)
+            string? finalSynthesisMarkdown = null;
+
+            while (await reader.ReadAsync())
+            {
+                // Markdown stačí přečíst jen jednou při prvním průchodu (pro všechny řádky je stejný)
+                if (finalSynthesisMarkdown == null && !reader.IsDBNull(4))
+                {
+                    finalSynthesisMarkdown = reader.GetString(4);
+                }
+
+                rankedDocuments.Add(new
+                {
+                    rank = rank, // Pořadí v žebříčku
+                    documentId = reader.GetGuid(0),
+                    fileName = reader.GetString(1),
+                    status = reader.GetString(2),
+                    totalRiskScore = reader.GetDouble(3)
+                });
+                rank++;
+            }
+
+            if (rankedDocuments.Count == 0)
+            {
+                return new NotFoundObjectResult(new { message = $"Projekt '{prefix}' neexistuje nebo nemá žádné dokumenty." });
+            }
+
+            // Přidání markdownu do finální JSON odpovědi
+            return new OkObjectResult(new
+            {
+                project = prefix,
+                summary = finalSynthesisMarkdown, // Bude obsahovat text, nebo null
+                leaderboard = rankedDocuments
+            });
         }
     }
 }

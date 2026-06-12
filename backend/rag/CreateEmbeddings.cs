@@ -127,8 +127,8 @@ public class CreateEmbeddings
         }
         _logger.LogInformation($"Chunks with embeddings saved to DB for document: {payload.FileName}");
 
-        //zmenil jsem SimilarityReqPayload na EmbedReqPayload s vice parametry
-        await QueueSender.SendToQueueAsync(QueueMessageType.SimilarityRequest, new EmbedReqPayload /*SimilarityReqPayload*/
+        
+        await QueueSender.SendToQueueAsync(QueueMessageType.SimilarityRequest, new EmbedReqPayload 
         {
             DocumentId = payload.DocumentId,
             Prefix = payload.Prefix,
@@ -218,12 +218,6 @@ public class CreateEmbeddings
         cmd.Parameters.AddWithValue("@chunk_index", chunkIndex);
         cmd.Parameters.AddWithValue("@text", text);
 
-        //smazano kvuli erroru pri testu - nesoulad mezi ukladanim vygenerovanych vektoru do sql v SeedRisks( na Json) a tady - raw bytes
-        //byte[] rawBytes = new byte[embedding.Length * sizeof(float)];
-        //Buffer.BlockCopy(embedding, 0, rawBytes, 0, rawBytes.Length);
-        //cmd.Parameters.AddWithValue("@embedding", rawBytes);
-
-        //nahrada
         string jsonEmbedding = JsonSerializer.Serialize(embedding);
         byte[] jsonBytes = Encoding.UTF8.GetBytes(jsonEmbedding);
         cmd.Parameters.AddWithValue("@embedding", jsonBytes);

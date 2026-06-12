@@ -147,7 +147,7 @@ public class InitDocAnalysis
 
         await conn.OpenAsync();
 
-        //pridal jsem pdf_url a @pdfUrl - spusteni analyzy hazelo chybu protoze to potrebovala
+
         using var cmd = new SqlCommand(@"
             INSERT INTO documents (analysis_id, file_name, operation_id, status, pdf_url)
             SELECT id, @fileName, @operationId, 'processing', @pdfUrl
@@ -158,7 +158,7 @@ public class InitDocAnalysis
         cmd.Parameters.AddWithValue("@prefix", prefix);
         cmd.Parameters.AddWithValue("@fileName", blobName);
         cmd.Parameters.AddWithValue("@operationId", operationId);
-        cmd.Parameters.AddWithValue("@pdfUrl", blobName); // pridany radek kvuli chybe
+        cmd.Parameters.AddWithValue("@pdfUrl", blobName); 
 
         int rows = await cmd.ExecuteNonQueryAsync();
 

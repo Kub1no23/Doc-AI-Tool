@@ -25,7 +25,7 @@ namespace rag
         [Function("GetDocumentDetails")]
         //změna AuthorizationLevel.Function na Anonymous - kvůli přístupu, CORS, v praxi JWT, lepsi nez default key pro delani FE a security
 
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "documents/{documentId:guid}/risks")] HttpRequest req, Guid documentId)
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "documents/{documentId:guid}/results")] HttpRequest req, Guid documentId)
         {
             var results = new List<object>();
 

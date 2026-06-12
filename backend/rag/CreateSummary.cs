@@ -13,14 +13,14 @@ using System.Threading.Tasks;
 
 namespace rag
 {
-    public class GetManagerialSummary
+    public class CreateSummary
     {
-        private readonly ILogger<GetManagerialSummary> _logger;
+        private readonly ILogger<CreateSummary> _logger;
         private readonly string _sqlConnection;
         private readonly string _openAiEndpoint;
         private readonly string _openAiKey;
 
-        public GetManagerialSummary(ILogger<GetManagerialSummary> logger)
+        public CreateSummary(ILogger<CreateSummary> logger)
         {
             _logger = logger;
             _sqlConnection = Environment.GetEnvironmentVariable("SqlConnection") ?? throw new Exception("Chybí SqlConnection");
@@ -68,7 +68,7 @@ namespace rag
 
             using (var cmdDocs = new SqlCommand(sqlDocs, conn))
             {
-                // TADY CHYBĚL TENTO ŘÁDEK:
+                
                 cmdDocs.Parameters.AddWithValue("@analysisId", analysisId);
 
                 using (var reader = await cmdDocs.ExecuteReaderAsync())
