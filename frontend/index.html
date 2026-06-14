@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <!-- Lucide ikony z npm CDN (unpkg.com). Npm zde není lokálně nainstalované - balíček se doručuje přes veřejný CDN mirror npm registru. -->
     <script src="https://unpkg.com/lucide@latest"></script>
-    <link rel="stylesheet" href="static/styles.css">
+    <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
@@ -387,7 +387,7 @@
                     });
 
                     historyItem.addEventListener('click', () => {
-                        window.location.href = `/project?prefix=${encodeURIComponent(analysis.name)}`;
+                        window.location.href = `project.html?prefix=${encodeURIComponent(analysis.name)}`;
                     });
 
                     sidebarHistory.appendChild(historyItem);
@@ -510,7 +510,7 @@
                             updateLoadingProgress(done, processing, total);
                         }
                         if (statusData.summary !== null && statusData.summary !== undefined) {
-                            window.location.href = `/project?prefix=${encodeURIComponent(name)}`;
+                            window.location.href = `project.html?prefix=${encodeURIComponent(name)}`;
                             break;
                         }
                     } catch (_) {}
