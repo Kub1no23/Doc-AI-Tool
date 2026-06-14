@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<!-- TechDocIntel - Hlavní strana. Single-page aplikace pro nahrání PDF dokumentů a spuštění AI analýzy stavebních rizik.
+     Veškerá komunikace s Azure API probíhá přímo z JavaScriptu -->
+<html lang="cs">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TechDocIntel - Analýza stavebních rizik</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Lucide ikony z npm CDN (unpkg.com). Npm zde není lokálně nainstalované - balíček se doručuje přes veřejný CDN mirror npm registru. -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="static/styles.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Boční panel (sidebar) - historie analýz, navigace -->
+        <aside class="sidebar">
+            <h2 class="sidebar-heading">Analýzy</h2>
+
+            <div class="sidebar-history" id="sidebar-history">
+            </div>
+
+            <div class="sidebar-footer">
+                <button class="settings-btn">
+                    <i data-lucide="settings" width="18" height="18"></i>
+                    Nastavení
+                </button>
+            </div>
+        </aside>
+
+        <!-- Úchyt pro resize sidebaru tažením myši -->
+        <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
+
+        <!-- Hlavní obsah - hero sekce s uploadem PDF -->
+        <main class="main-content">
+            <section class="hero-section">
+                <h1 class="hero-title">TechDocIntel</h1>
+                <p class="hero-subtitle">
+                    Pokročilá AI analýza stavební dokumentace<br>
+                    Nahrajte technické zprávy, smlouvy nebo posudky<br> pro okamžitou detekci rizik.
+                </p>
+
+                <div class="upload-container" id="upload-container">
+                    <input type="file" id="file-upload" accept=".pdf" multiple style="display: none;">
+                    <div class="upload-icon">
+                        <i data-lucide="upload-cloud" width="48" height="48"></i>
+                    </div>
+                    <div class="upload-text">Klikněte pro nahrání nebo přetáhněte soubory sem</div>
+                    <div class="upload-hint">Podporované formáty: Pouze PDF (max. 50 MB)</div>
+                </div>
+
+                <div class="file-list" id="file-list">
+                </div>
+
+                <div class="actions-container">
+                    <button class="btn-primary" id="analyze-btn">
+                        <i data-lucide="sparkles" width="20" height="20"></i>
+                        Analyzovat dokumenty
+                    </button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modální okno - zadání názvu projektu před spuštěním analýzy -->
+    <div class="modal-overlay" id="project-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Název projektu</h2>
+                <button class="modal-close" id="modal-close">
+                    <i data-lucide="x" width="18" height="18"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>Zadejte název pro tuto analýzu:</p>
+                <input type="text" id="project-name-input" placeholder="Např. Rezidence Zličín" autofocus>
+                <p id="modal-error" style="color:var(--error-color);font-size:0.85rem;margin-top:8px;display:none;"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="modal-cancel">Zrušit</button>
+                <button class="btn-primary" id="modal-confirm">Pokračovat</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Překryvná vrstva - indikace průběhu nahrávání a AI analýzy -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-card">
+            <div class="loading-spinner"></div>
+            <div class="loading-text" id="loading-text">Probíhá analýza...</div>
+            <div class="loading-progress" id="loading-progress" style="display:none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-detail" id="progress-detail"></div>
+            </div>
+            <div class="loading-note" id="loading-note" style="display:none;">
+                <i data-lucide="info" width="14" height="14" style="flex-shrink:0;margin-top:1px;"></i>
+                <span>Můžete bezpečně opustit tuto stránku a vrátit se později.<br>Analýza poběží na pozadí.</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modální okno Nastavení -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Nastavení</h2>
+                <button class="modal-close" id="settings-close">
+                    <i data-lucide="x" width="18" height="18"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-section">
+                    <h3>Vzhled</h3>
+                    <div class="settings-row">
+                        <span>Tmavý režim</span>
+                        <label class="toggle">
+                            <input type="checkbox" id="dark-mode-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h3>Správa dat</h3>
+                    <button class="settings-destructive" id="delete-all-btn">
+                        <i data-lucide="trash-2" width="16" height="16"></i>
+                        Smazat všechny analýzy
+                    </button>
+                    <p class="settings-note">Tato akce je nevratná. Smaže všechny projekty i jejich výsledky.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Potvrzovací modal (nahrazuje browser confirm) -->
+    <div class="modal-overlay" id="confirm-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="confirm-title">Potvrzení</h2>
+                <button class="modal-close" id="confirm-close">
+                    <i data-lucide="x" width="18" height="18"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message">Jste si jistí?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="confirm-cancel">Zrušit</button>
+                <button class="btn-danger" id="confirm-ok">Ano, smazat</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+        lucide.createIcons();
+
+        function showToast(msg, type = 'error') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast--${type}`;
+            toast.textContent = msg;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        function showConfirmModal(msg) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                document.getElementById('confirm-message').textContent = msg;
+                modal.classList.add('active');
+
+                const ok = document.getElementById('confirm-ok');
+                const cancel = document.getElementById('confirm-cancel');
+                const close = document.getElementById('confirm-close');
+
+                function cleanup(result) {
+                    modal.classList.remove('active');
+                    ok.removeEventListener('click', onOk);
+                    cancel.removeEventListener('click', onCancel);
+                    close.removeEventListener('click', onCancel);
+                    modal.removeEventListener('click', onOverlay);
+                    resolve(result);
+                }
+                function onOk() { cleanup(true); }
+                function onCancel() { cleanup(false); }
+                function onOverlay(e) { if (e.target === modal) cleanup(false); }
+
+                ok.addEventListener('click', onOk);
+                cancel.addEventListener('click', onCancel);
+                close.addEventListener('click', onCancel);
+                modal.addEventListener('click', onOverlay);
+            });
+        }
+
+        // Resizable sidebar - tažení za úchyt mění šířku, ukládá se do localStorage
+        (function() {
+            const sidebar = document.querySelector('.sidebar');
+            const handle = document.getElementById('sidebar-resize-handle');
+            let isResizing = false;
+
+            const savedWidth = localStorage.getItem('sidebar-width');
+            if (savedWidth) {
+                sidebar.style.width = savedWidth + 'px';
+            }
+
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                isResizing = true;
+                handle.classList.add('active');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isResizing) return;
+                const newWidth = Math.max(180, Math.min(500, e.clientX));
+                sidebar.style.width = newWidth + 'px';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (isResizing) {
+                    isResizing = false;
+                    handle.classList.remove('active');
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    localStorage.setItem('sidebar-width', parseInt(sidebar.style.width));
+                }
+            });
+        })();
+
+        const API_BASE = 'https://techdoc-ai-tendr-orlice.azurewebsites.net/api';
+
+        const uploadContainer = document.getElementById('upload-container');
+        const fileUpload = document.getElementById('file-upload');
+        const fileList = document.getElementById('file-list');
+        const sidebarHistory = document.getElementById('sidebar-history');
+        const analyzeBtn = document.getElementById('analyze-btn');
+
+        const modal = document.getElementById('project-modal');
+        const modalClose = document.getElementById('modal-close');
+        const modalCancel = document.getElementById('modal-cancel');
+        const modalConfirm = document.getElementById('modal-confirm');
+        const projectNameInput = document.getElementById('project-name-input');
+        const modalError = document.getElementById('modal-error');
+
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        const loadingProgress = document.getElementById('loading-progress');
+        const progressFill = document.getElementById('progress-fill');
+        const progressDetail = document.getElementById('progress-detail');
+        const loadingNote = document.getElementById('loading-note');
+
+        let selectedFiles = [];
+        let modalResolve = null;
+
+        window.addEventListener('load', () => {
+            loadAnalyses();
+        });
+
+        function showModal() {
+            return new Promise((resolve) => {
+                modalResolve = resolve;
+                modalError.style.display = 'none';
+                projectNameInput.value = '';
+                modal.classList.add('active');
+                setTimeout(() => projectNameInput.focus(), 100);
+            });
+        }
+
+        function hideModal() {
+            modal.classList.remove('active');
+            modalResolve = null;
+        }
+
+        modalClose.addEventListener('click', () => {
+            if (modalResolve) modalResolve(null);
+            hideModal();
+        });
+
+        modalCancel.addEventListener('click', () => {
+            if (modalResolve) modalResolve(null);
+            hideModal();
+        });
+
+        modalConfirm.addEventListener('click', () => {
+            const name = projectNameInput.value.trim();
+            if (!name) {
+                modalError.textContent = 'Zadejte název projektu.';
+                modalError.style.display = 'block';
+                return;
+            }
+            modalError.style.display = 'none';
+            if (modalResolve) modalResolve(name);
+            hideModal();
+        });
+
+        projectNameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') modalConfirm.click();
+        });
+
+        function showLoading(message) {
+            loadingText.textContent = message;
+            loadingOverlay.style.display = 'flex';
+            loadingProgress.style.display = 'none';
+            loadingNote.style.display = 'none';
+        }
+
+        function hideLoading() {
+            loadingOverlay.style.display = 'none';
+        }
+
+        function stopAndAlert(msg) {
+            hideLoading();
+            showToast(msg, 'error');
+        }
+
+        function updateLoadingProgress(done, processing, total) {
+            loadingProgress.style.display = 'block';
+            const pct = total > 0 ? Math.round(((done + processing * 0.5) / total) * 100) : 0;
+            progressFill.style.width = Math.min(pct, 100) + '%';
+            if (done < total) {
+                if (done === 0 && processing > 0) {
+                    loadingText.textContent = 'Probíhá AI analýza dokumentů...';
+                    progressDetail.textContent = `AI analyzuje ${total} dokumentů`;
+                } else if (done > 0) {
+                    loadingText.textContent = 'Probíhá zpracování dokumentů...';
+                    progressDetail.textContent = `Zpracováno ${done} z ${total} dokumentů`;
+                } else {
+                    progressDetail.textContent = `Analyzuji ${total} dokumentů...`;
+                }
+            } else {
+                progressDetail.textContent = 'Všechny dokumenty zpracovány';
+                loadingText.textContent = 'Probíhá detailní porovnávání dokumentů...';
+            }
+        }
+
+        async function loadAnalyses() {
+            try {
+                const response = await fetch(`${API_BASE}/analysis`);
+                if (!response.ok) return;
+                const data = await response.json();
+                sidebarHistory.innerHTML = '';
+                if (data.length === 0) {
+                    sidebarHistory.innerHTML = '<div class="sidebar-empty">Zatím žádné analýzy.<br>Nahrajte PDF a spusťte analýzu.</div>';
+                    return;
+                }
+                data.forEach(analysis => {
+                    const historyItem = document.createElement('div');
+                    historyItem.className = 'history-item';
+
+                    let iconHtml = '';
+                    if (analysis.status === 'processing') {
+                        iconHtml = '<div class="history-item-icon"><i data-lucide="loader" class="spin-cw" width="14" height="14"></i></div>';
+                    } else if (analysis.status === 'pending') {
+                        iconHtml = '<div class="history-item-icon"><i data-lucide="loader" class="spin-ccw" width="14" height="14"></i></div>';
+                    }
+
+                    historyItem.innerHTML = `
+                        ${iconHtml}
+                        <span class="history-item-text" title="${analysis.name}">${analysis.name}</span>
+                        <button class="history-delete-btn" title="Smazat analýzu">
+                            <i data-lucide="trash-2" width="14" height="14"></i>
+                        </button>
+                    `;
+
+                    historyItem.querySelector('.history-delete-btn').addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        if (!await showConfirmModal(`Opravdu chcete tvrale smazat analýzu "${analysis.name}"?`)) return;
+                        try {
+                            const res = await fetch(`${API_BASE}/analysis/${analysis.id}`, { method: 'DELETE' });
+                            if (res.ok) loadAnalyses();
+                        } catch (err) {
+                            console.error('Chyba při mazání:', err);
+                        }
+                    });
+
+                    historyItem.addEventListener('click', () => {
+                        window.location.href = `/project?prefix=${encodeURIComponent(analysis.name)}`;
+                    });
+
+                    sidebarHistory.appendChild(historyItem);
+                });
+                lucide.createIcons();
+            } catch (error) {
+                sidebarHistory.innerHTML = `<div style="padding:10px 12px;color:var(--error-color);font-size:0.85rem;">Chyba spojení s Azure API — povol CORS v Azure Portal (API → CORS → přidej http://localhost:8080).</div>`;
+            }
+        }
+
+        // Settings modal
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsClose = document.getElementById('settings-close');
+        const settingsBtn = document.querySelector('.settings-btn');
+        const darkModeToggle = document.getElementById('dark-mode-toggle');
+        const deleteAllBtn = document.getElementById('delete-all-btn');
+
+        // Apply dark mode on load and listen for changes
+        if (localStorage.getItem('dark-mode') === 'true') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            darkModeToggle.checked = true;
+        }
+
+        darkModeToggle.addEventListener('change', () => {
+            const enabled = darkModeToggle.checked;
+            document.documentElement.setAttribute('data-theme', enabled ? 'dark' : 'light');
+            localStorage.setItem('dark-mode', enabled);
+        });
+
+        settingsBtn.addEventListener('click', () => settingsModal.classList.add('active'));
+        settingsClose.addEventListener('click', () => settingsModal.classList.remove('active'));
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) settingsModal.classList.remove('active');
+        });
+
+        deleteAllBtn.addEventListener('click', async () => {
+            if (!await showConfirmModal('Opravdu chcete smazat VŠECHNY analýzy? Tato akce je nevratná.')) return;
+            try {
+                const res = await fetch(`${API_BASE}/analysis`);
+                if (!res.ok) { showToast('Chyba při načítání analýz.', 'error'); return; }
+                const analyses = await res.json();
+                for (const a of analyses) {
+                    await fetch(`${API_BASE}/analysis/${a.id}`, { method: 'DELETE' });
+                }
+                settingsModal.classList.remove('active');
+                showToast('Všechny analýzy byly smazány.', 'success');
+                loadAnalyses();
+            } catch (e) {
+                showToast('Chyba při mazání: ' + e.message, 'error');
+            }
+        });
+
+        analyzeBtn.addEventListener('click', async () => {
+            if (selectedFiles.length === 0) {
+                showToast('Nejprve prosím nahrajte alespoň jeden PDF dokument.', 'info');
+                return;
+            }
+
+            const name = await showModal();
+            if (!name) return;
+
+            analyzeBtn.disabled = true;
+            try {
+                showLoading('Vytváření analýzy...');
+                const createRes = await fetch(`${API_BASE}/analysis?name=${encodeURIComponent(name)}`, { method: 'POST' });
+                if (!createRes.ok) {
+                    const text = await createRes.text();
+                    let msg = text;
+                    try { const j = JSON.parse(text); msg = j.error || text; } catch (_) {}
+                    stopAndAlert(`Chyba při vytváření analýzy: ${msg}`);
+                    return;
+                }
+
+                showLoading('Získávání přístupu k úložišti...');
+                const tokenRes = await fetch(`${API_BASE}/documents/token?prefix=${encodeURIComponent(name)}&mode=upload`);
+                if (!tokenRes.ok) {
+                    stopAndAlert('Chyba při získávání SAS tokenu.');
+                    return;
+                }
+                const tokenData = await tokenRes.json();
+                const containerUrl = tokenData.containerUrl;
+                const sasToken = tokenData.sasToken;
+
+                showLoading('Nahrávání dokumentů...');
+                for (const file of selectedFiles) {
+                    const blobUrl = `${containerUrl}/${encodeURIComponent(name)}/${encodeURIComponent(file.name)}?${sasToken}`;
+                    const uploadRes = await fetch(blobUrl, {
+                        method: 'PUT',
+                        headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/pdf' },
+                        body: file
+                    });
+                    if (!uploadRes.ok) {
+                        throw new Error(`Nahrání souboru ${file.name} selhalo (${uploadRes.status})`);
+                    }
+                }
+
+                showLoading('Spouštění AI analýzy...');
+
+                const analyzeRes = await fetch(`${API_BASE}/documents/analyze?prefix=${encodeURIComponent(name)}`, { method: 'POST' });
+                if (!analyzeRes.ok) {
+                    const text = await analyzeRes.text();
+                    stopAndAlert(`Chyba při spouštění analýzy: ${text}`);
+                    return;
+                }
+
+                showLoading('Probíhá AI analýza dokumentů...');
+                loadingNote.style.display = 'flex';
+                lucide.createIcons();
+
+                while (true) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    try {
+                        const statusRes = await fetch(`${API_BASE}/analysis/results?prefix=${encodeURIComponent(name)}`);
+                        if (!statusRes.ok) continue;
+                        const statusData = await statusRes.json();
+                        if (statusData.leaderboard && statusData.leaderboard.length > 0) {
+                            const total = statusData.leaderboard.length;
+                            const done = statusData.leaderboard.filter(d => d.status === 'done').length;
+                            const processing = statusData.leaderboard.filter(d => d.status === 'processing_ai').length;
+                            updateLoadingProgress(done, processing, total);
+                        }
+                        if (statusData.summary !== null && statusData.summary !== undefined) {
+                            window.location.href = `/project?prefix=${encodeURIComponent(name)}`;
+                            break;
+                        }
+                    } catch (_) {}
+                }
+            } catch (error) {
+                stopAndAlert(`Došlo k chybě: ${error.message}`);
+            } finally {
+                hideLoading();
+                analyzeBtn.disabled = false;
+            }
+        });
+
+        uploadContainer.addEventListener('click', () => {
+            fileUpload.click();
+        });
+
+        fileUpload.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files).filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+                if (files.length !== e.target.files.length) {
+                    showToast('Některé soubory nebyly přidány. Jsou povoleny pouze PDF soubory.', 'info');
+                }
+                selectedFiles = [...selectedFiles, ...files];
+                renderFileList();
+                fileUpload.value = '';
+            });
+
+            uploadContainer.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadContainer.style.borderColor = 'var(--text-secondary)';
+            uploadContainer.style.backgroundColor = 'var(--bg-primary)';
+        });
+
+        uploadContainer.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            uploadContainer.style.borderColor = 'var(--border-color)';
+            uploadContainer.style.backgroundColor = '';
+        });
+
+        uploadContainer.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadContainer.style.borderColor = 'var(--border-color)';
+            uploadContainer.style.backgroundColor = '';
+
+            if (e.dataTransfer.files) {
+                const allFiles = Array.from(e.dataTransfer.files);
+                const files = allFiles.filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+                if (files.length !== allFiles.length) {
+                    showToast('Některé soubory nebyly přidány. Jsou povoleny pouze PDF soubory.', 'info');
+                }
+                selectedFiles = [...selectedFiles, ...files];
+                renderFileList();
+            }
+        });
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function renderFileList() {
+            fileList.innerHTML = '';
+            selectedFiles.forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.innerHTML = `
+                    <div class="file-info">
+                        <i data-lucide="file" width="24" height="24" class="file-icon"></i>
+                        <div class="file-details">
+                            <div class="file-name">${file.name}</div>
+                            <div class="file-size">${formatBytes(file.size)}</div>
+                        </div>
+                    </div>
+                    <button class="file-remove" title="Odebrat" onclick="removeFile(${index})">
+                        <i data-lucide="x" width="18" height="18"></i>
+                    </button>
+                `;
+                fileList.appendChild(fileItem);
+            });
+            lucide.createIcons();
+        }
+
+        window.removeFile = function (index) {
+            selectedFiles.splice(index, 1);
+            renderFileList();
+        }
+    </script>
+</body>
+
+</html>

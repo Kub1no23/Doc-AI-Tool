@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<!-- TechDocIntel - Stránka výsledků. Zobrazuje manažerské shrnutí (Markdown vykreslený přes 'marked') a žebříček dokumentů
+     s rizikovým skóre. Data se načítají z Azure API při loadu stránky. -->
+<html lang="cs">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TechDocIntel - Výsledky analýzy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Lucide ikony z npm CDN (unpkg.com) - doručeno přes CDN bez lokální instalace npm -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- marked knihovna z npm CDN (jsdelivr) - převod Markdown na HTML pro vykreslení summary -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="static/styles.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Boční panel - tlačítko zpět a historie analýz -->
+        <aside class="sidebar">
+            <button class="sidebar-new-chat" id="home-btn">
+                <i data-lucide="arrow-left" width="18" height="18"></i>
+                Zpět na hlavní stránku
+            </button>
+
+            <div class="sidebar-history" id="sidebar-history">
+            </div>
+
+            <div class="sidebar-footer">
+                <button class="settings-btn">
+                    <i data-lucide="settings" width="18" height="18"></i>
+                    Nastavení
+                </button>
+            </div>
+        </aside>
+
+        <!-- Úchyt pro resize sidebaru tažením myši -->
+        <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
+
+        <!-- Hlavní sekce s výsledky analýzy (manažerské shrnutí + žebříček dokumentů) -->
+        <main class="main-content">
+            <div class="project-content" id="project-content">
+                <div class="project-header">
+                    <h1 id="project-title">Výsledky analýzy</h1>
+                </div>
+
+                <div class="loading-overlay" id="results-loading">
+                    <div class="loading-spinner"></div>
+                    <div class="loading-text">Načítání výsledků...</div>
+                </div>
+
+                <div id="results-container" style="display: none;">
+                    <div class="summary-card" id="summary-container">
+                        <h2>Manažerské shrnutí</h2>
+                        <div id="summary-content"></div>
+                    </div>
+
+                    <div class="leaderboard-section">
+                        <h2>Žebříček dokumentů</h2>
+                        <table class="leaderboard-table">
+                            <thead>
+                                <tr>
+                                    <th>Pořadí</th>
+                                    <th>Název souboru</th>
+                                    <th>Stav</th>
+                                    <th>Skóre rizika</th>
+                                </tr>
+                            </thead>
+                            <tbody id="leaderboard-body">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="error-container" style="display: none;">
+                    <p id="error-message" style="color: var(--error-color);"></p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modální okno Nastavení -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Nastavení</h2>
+                <button class="modal-close" id="settings-close">
+                    <i data-lucide="x" width="18" height="18"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-section">
+                    <h3>Vzhled</h3>
+                    <div class="settings-row">
+                        <span>Tmavý režim</span>
+                        <label class="toggle">
+                            <input type="checkbox" id="dark-mode-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h3>Správa dat</h3>
+                    <button class="settings-destructive" id="delete-all-btn">
+                        <i data-lucide="trash-2" width="16" height="16"></i>
+                        Smazat všechny analýzy
+                    </button>
+                    <p class="settings-note">Tato akce je nevratná. Smaže všechny projekty i jejich výsledky.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Potvrzovací modal (nahrazuje browser confirm) -->
+    <div class="modal-overlay" id="confirm-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="confirm-title">Potvrzení</h2>
+                <button class="modal-close" id="confirm-close">
+                    <i data-lucide="x" width="18" height="18"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message">Jste si jistí?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="confirm-cancel">Zrušit</button>
+                <button class="btn-danger" id="confirm-ok">Ano, smazat</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <!-- Modální okno s detailem rizik jednoho dokumentu -->
+    <div class="modal-overlay" id="risk-modal">
+        <div class="modal modal--wide">
+            <div class="modal-header">
+                <h2 id="risk-modal-title">Detail rizik</h2>
+                <div class="modal-header-actions">
+                    <button class="btn-pdf" id="view-pdf-btn" style="display:none;">
+                        <i data-lucide="file-text" width="16" height="16"></i>
+                        Zobrazit PDF
+                    </button>
+                    <button class="modal-close" id="risk-modal-close">
+                        <i data-lucide="x" width="18" height="18"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-body" id="risk-modal-body">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        function showConfirmModal(msg) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                document.getElementById('confirm-message').textContent = msg;
+                modal.classList.add('active');
+
+                const ok = document.getElementById('confirm-ok');
+                const cancel = document.getElementById('confirm-cancel');
+                const close = document.getElementById('confirm-close');
+
+                function cleanup(result) {
+                    modal.classList.remove('active');
+                    ok.removeEventListener('click', onOk);
+                    cancel.removeEventListener('click', onCancel);
+                    close.removeEventListener('click', onCancel);
+                    modal.removeEventListener('click', onOverlay);
+                    resolve(result);
+                }
+                function onOk() { cleanup(true); }
+                function onCancel() { cleanup(false); }
+                function onOverlay(e) { if (e.target === modal) cleanup(false); }
+
+                ok.addEventListener('click', onOk);
+                cancel.addEventListener('click', onCancel);
+                close.addEventListener('click', onCancel);
+                modal.addEventListener('click', onOverlay);
+            });
+        }
+
+        function showToast(msg, type = 'error') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast--${type}`;
+            toast.textContent = msg;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        // Resizable sidebar - stejná logika jako na hlavní stránce
+        (function() {
+            const sidebar = document.querySelector('.sidebar');
+            const handle = document.getElementById('sidebar-resize-handle');
+            let isResizing = false;
+
+            const savedWidth = localStorage.getItem('sidebar-width');
+            if (savedWidth) {
+                sidebar.style.width = savedWidth + 'px';
+            }
+
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                isResizing = true;
+                handle.classList.add('active');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isResizing) return;
+                const newWidth = Math.max(180, Math.min(500, e.clientX));
+                sidebar.style.width = newWidth + 'px';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (isResizing) {
+                    isResizing = false;
+                    handle.classList.remove('active');
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    localStorage.setItem('sidebar-width', parseInt(sidebar.style.width));
+                }
+            });
+        })();
+
+        // Settings modal + dark mode
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsClose = document.getElementById('settings-close');
+        const settingsBtn = document.querySelector('.settings-btn');
+        const darkModeToggle = document.getElementById('dark-mode-toggle');
+        const deleteAllBtn = document.getElementById('delete-all-btn');
+
+        if (localStorage.getItem('dark-mode') === 'true') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            darkModeToggle.checked = true;
+        }
+
+        darkModeToggle.addEventListener('change', () => {
+            const enabled = darkModeToggle.checked;
+            document.documentElement.setAttribute('data-theme', enabled ? 'dark' : 'light');
+            localStorage.setItem('dark-mode', enabled);
+        });
+
+        settingsBtn.addEventListener('click', () => settingsModal.classList.add('active'));
+        settingsClose.addEventListener('click', () => settingsModal.classList.remove('active'));
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) settingsModal.classList.remove('active');
+        });
+
+        deleteAllBtn.addEventListener('click', async () => {
+            if (!await showConfirmModal('Opravdu chcete smazat VŠECHNY analýzy? Tato akce je nevratná.')) return;
+            try {
+                const res = await fetch(`${API_BASE}/analysis`);
+                if (!res.ok) { showToast('Chyba při načítání analýz.', 'error'); return; }
+                const analyses = await res.json();
+                for (const a of analyses) {
+                    await fetch(`${API_BASE}/analysis/${a.id}`, { method: 'DELETE' });
+                }
+                settingsModal.classList.remove('active');
+                showToast('Všechny analýzy byly smazány.', 'success');
+                loadAnalyses();
+                loadResults();
+            } catch (e) {
+                showToast('Chyba při mazání: ' + e.message, 'error');
+            }
+        });
+
+        const API_BASE = 'https://techdoc-ai-tendr-orlice.azurewebsites.net/api';
+
+        document.getElementById('home-btn').addEventListener('click', () => {
+            window.location.href = '/';
+        });
+
+        async function loadResults() {
+            const params = new URLSearchParams(window.location.search);
+            const prefix = params.get('prefix');
+
+            if (!prefix) {
+                document.getElementById('error-container').style.display = 'block';
+                document.getElementById('error-message').textContent = 'Chybí parametr prefix.';
+                document.getElementById('results-loading').classList.remove('active');
+                return;
+            }
+
+            document.getElementById('project-title').textContent = `Výsledky analýzy: ${prefix}`;
+
+            try {
+                const response = await fetch(`${API_BASE}/analysis/results?prefix=${encodeURIComponent(prefix)}`);
+                if (!response.ok) {
+                    throw new Error(`API vrátilo chybu: ${response.status}`);
+                }
+                const data = await response.json();
+
+                document.getElementById('results-loading').classList.remove('active');
+                document.getElementById('results-container').style.display = 'block';
+
+                if (data.summary) {
+                    document.getElementById('summary-content').innerHTML = marked.parse(data.summary);
+                } else {
+                    document.getElementById('summary-content').textContent = 'Shrnutí není k dispozici.';
+                }
+
+                const tbody = document.getElementById('leaderboard-body');
+                if (data.leaderboard && data.leaderboard.length > 0) {
+                    data.leaderboard.forEach(item => {
+                        const tr = document.createElement('tr');
+                        let statusHtml;
+                        switch (item.status) {
+                            case 'done':
+                                statusHtml = '<span class="status-badge done"><i data-lucide="check-circle" width="14" height="14"></i> Dokončeno</span>';
+                                break;
+                            case 'failed':
+                                statusHtml = '<span class="status-badge failed"><i data-lucide="x-circle" width="14" height="14"></i> Selhalo</span>';
+                                break;
+                            case 'processing_ai':
+                                statusHtml = '<span class="status-badge processing"><i data-lucide="loader" class="spin-cw" width="14" height="14"></i> Vyhodnocování rizik</span>';
+                                break;
+                            case 'processing':
+                                statusHtml = '<span class="status-badge processing"><i data-lucide="loader" class="spin-ccw" width="14" height="14"></i> Zpracování PDF</span>';
+                                break;
+                            default:
+                                statusHtml = '<span class="status-badge processing"><i data-lucide="clock" width="14" height="14"></i> Čeká</span>';
+                        }
+                        tr.innerHTML = `
+                            <td class="rank-cell">${item.rank}</td>
+                            <td>${item.fileName || 'Neznámý soubor'}</td>
+                            <td>${statusHtml}</td>
+                            <td class="score-cell">${item.totalRiskScore != null ? item.totalRiskScore.toFixed(1) : '—'}</td>
+                        `;
+                        if (item.documentId && item.status === 'done') {
+                            tr.style.cursor = 'pointer';
+                            tr.addEventListener('click', () => showRiskDetail(item.documentId, item.fileName || 'Dokument', prefix));
+                        }
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);padding:32px;">Žádné dokumenty k zobrazení.</td></tr>';
+                }
+
+                await loadAnalyses();
+                lucide.createIcons();
+
+            } catch (error) {
+                document.getElementById('results-loading').classList.remove('active');
+                document.getElementById('error-container').style.display = 'block';
+                document.getElementById('error-message').textContent = `Chyba při načítání výsledků: ${error.message}`;
+            }
+        }
+
+        async function loadAnalyses() {
+            const sidebarHistory = document.getElementById('sidebar-history');
+            try {
+                const response = await fetch(`${API_BASE}/analysis`);
+                if (!response.ok) return;
+                const data = await response.json();
+                sidebarHistory.innerHTML = '';
+                if (data.length === 0) {
+                    sidebarHistory.innerHTML = '<div class="sidebar-empty">Zatím žádné analýzy.</div>';
+                    return;
+                }
+                data.forEach(analysis => {
+                    const item = document.createElement('div');
+                    item.className = 'history-item';
+
+                    let iconHtml = '';
+                    if (analysis.status === 'processing') {
+                        iconHtml = '<div class="history-item-icon"><i data-lucide="loader" class="spin-cw" width="14" height="14"></i></div>';
+                    } else if (analysis.status === 'pending') {
+                        iconHtml = '<div class="history-item-icon"><i data-lucide="loader" class="spin-ccw" width="14" height="14"></i></div>';
+                    }
+
+                    item.innerHTML = `${iconHtml}<span class="history-item-text" title="${analysis.name}">${analysis.name}</span>`;
+                    item.addEventListener('click', () => {
+                        window.location.href = `/project?prefix=${encodeURIComponent(analysis.name)}`;
+                    });
+                    sidebarHistory.appendChild(item);
+                });
+                lucide.createIcons();
+            } catch (e) {
+                // sidebar stays empty on error
+            }
+        }
+
+        // Risk detail modal
+        const riskModal = document.getElementById('risk-modal');
+        const riskModalClose = document.getElementById('risk-modal-close');
+        const riskModalTitle = document.getElementById('risk-modal-title');
+        const riskModalBody = document.getElementById('risk-modal-body');
+
+        riskModalClose.addEventListener('click', () => riskModal.classList.remove('active'));
+        riskModal.addEventListener('click', (e) => {
+            if (e.target === riskModal) riskModal.classList.remove('active');
+        });
+
+        let currentPdfFileName = null;
+        let currentPdfPrefix = null;
+
+        const viewPdfBtn = document.getElementById('view-pdf-btn');
+        viewPdfBtn.addEventListener('click', () => openPdf(currentPdfPrefix, currentPdfFileName));
+
+        // Coverage filters
+        function getActiveFilters() {
+            try {
+                const saved = JSON.parse(localStorage.getItem('risk-filters'));
+                if (Array.isArray(saved) && saved.length) return saved;
+            } catch (_) {}
+            return ['full'];
+        }
+
+        function saveActiveFilters(filters) {
+            localStorage.setItem('risk-filters', JSON.stringify(filters));
+        }
+
+        function applyFilters() {
+            const active = getActiveFilters();
+            document.querySelectorAll('.risk-card').forEach(card => {
+                card.style.display = active.includes(card.dataset.coverage) ? '' : 'none';
+            });
+        }
+
+        function renderFilters() {
+            const container = document.createElement('div');
+            container.className = 'risk-filters';
+            const activeFilters = getActiveFilters();
+
+            const types = [
+                { value: 'full', label: 'Plný výskyt' },
+                { value: 'partial', label: 'Částečný' },
+                { value: 'none', label: 'Žádný' },
+            ];
+
+            types.forEach(type => {
+                const chip = document.createElement('button');
+                chip.className = 'filter-chip';
+                if (activeFilters.includes(type.value)) chip.classList.add('active');
+                chip.dataset.coverage = type.value;
+                chip.textContent = type.label;
+                chip.addEventListener('click', () => {
+                    const current = getActiveFilters();
+                    const willBeActive = !current.includes(type.value);
+                    let updated;
+                    if (willBeActive) {
+                        updated = [...current, type.value];
+                    } else {
+                        updated = current.filter(v => v !== type.value);
+                    }
+                    if (!updated.length) updated = ['full'];
+                    saveActiveFilters(updated);
+                    document.querySelectorAll('.filter-chip').forEach(c => {
+                        c.classList.toggle('active', updated.includes(c.dataset.coverage));
+                    });
+                    applyFilters();
+                });
+                container.appendChild(chip);
+            });
+
+            return container;
+        }
+
+        async function openPdf(prefix, fileName) {
+            if (!prefix || !fileName) return;
+            try {
+                const tokenRes = await fetch(`${API_BASE}/documents/token?prefix=${encodeURIComponent(prefix)}`);
+                if (!tokenRes.ok) { showToast('Chyba při získávání přístupu k PDF.', 'error'); return; }
+                const tokenData = await tokenRes.json();
+
+                const parts = fileName.split('/');
+                const blobName = parts.slice(1).join('/');
+                const pdfUrl = `${tokenData.containerUrl}/${encodeURIComponent(prefix)}/${encodeURIComponent(blobName)}?${tokenData.sasToken}`;
+
+                window.open(pdfUrl, '_blank');
+            } catch (e) {
+                showToast('Chyba: ' + e.message, 'error');
+            }
+        }
+
+        async function showRiskDetail(documentId, fileName, prefix) {
+            currentPdfFileName = fileName;
+            currentPdfPrefix = prefix;
+
+            riskModalTitle.textContent = `Rizika: ${fileName.split('/').pop()}`;
+            riskModalBody.innerHTML = '<div class="loading-spinner" style="margin: 24px auto;"></div>';
+            riskModal.classList.add('active');
+            viewPdfBtn.style.display = fileName ? 'inline-flex' : 'none';
+            lucide.createIcons();
+
+            try {
+                const res = await fetch(`${API_BASE}/documents/${documentId}/results`);
+                if (!res.ok) {
+                    riskModalBody.innerHTML = `<p style="color:var(--error-color);">Chyba při načítání rizik (${res.status})</p>`;
+                    return;
+                }
+                const data = await res.json();
+                riskModalBody.innerHTML = '';
+                if (!data.risks || data.risks.length === 0) {
+                    riskModalBody.innerHTML = '<p style="color:var(--text-secondary);text-align:center;padding:20px;">Žádná riziková zjištění.</p>';
+                    lucide.createIcons();
+                    return;
+                }
+
+                const filters = renderFilters();
+                riskModalBody.appendChild(filters);
+
+                const cardsContainer = document.createElement('div');
+                cardsContainer.className = 'risk-cards-container';
+                riskModalBody.appendChild(cardsContainer);
+
+                data.risks.forEach(risk => {
+                    const card = document.createElement('div');
+                    card.className = 'risk-card';
+                    card.dataset.coverage = risk.coverage;
+                    const coverageLabel = risk.coverage === 'full' ? 'Plný výskyt' : risk.coverage === 'partial' ? 'Částečný výskyt' : 'Žádný výskyt';
+                    const coverageClass = risk.coverage === 'full' ? 'coverage-full' : risk.coverage === 'partial' ? 'coverage-partial' : 'coverage-none';
+                    const pages = risk.pages && risk.pages.length ? `<div class="risk-card-pages">Nalezeno na straně: ${risk.pages.join(', ')}</div>` : '';
+                    card.innerHTML = `
+                        <div class="risk-card-header">
+                            <span class="risk-code">${risk.riskCode}</span>
+                            <span class="risk-coverage ${coverageClass}">${coverageLabel}</span>
+                        </div>
+                        <div class="risk-card-name">${risk.riskName || 'Neznámé riziko'}</div>
+                        <div class="risk-card-explanation">${risk.explanation || 'Bez vysvětlení.'}</div>
+                        ${pages}
+                    `;
+                    cardsContainer.appendChild(card);
+                });
+                applyFilters();
+                lucide.createIcons();
+            } catch (e) {
+                riskModalBody.innerHTML = `<p style="color:var(--error-color);">Chyba spojení: ${e.message}</p>`;
+            }
+        }
+
+        window.addEventListener('load', () => {
+            document.getElementById('results-loading').classList.add('active');
+            loadResults();
+        });
+    </script>
+</body>
+
+</html>
